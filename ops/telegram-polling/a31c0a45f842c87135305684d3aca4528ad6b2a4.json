@@ -1,0 +1,18 @@
+{
+  "status": "failed",
+  "commit": "a31c0a45f842c87135305684d3aca4528ad6b2a4",
+  "run_id": "32595454725",
+  "steps": {
+    "function": "success",
+    "recover": "failure",
+    "trigger": "skipped"
+  },
+  "function_id": "d4eth7c2vqvhhcc4tfhh",
+  "trigger_id": "",
+  "mode": "polling",
+  "cron": "",
+  "before_pending_updates": null,
+  "recovered_start_chats": null,
+  "pending_updates": null,
+  "checked_at": "2026-08-22T20:02:12Z"
+}
