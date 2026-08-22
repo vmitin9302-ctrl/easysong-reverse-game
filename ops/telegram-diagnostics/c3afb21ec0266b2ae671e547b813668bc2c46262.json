@@ -1,0 +1,21 @@
+{
+  "commit": "c3afb21ec0266b2ae671e547b813668bc2c46262",
+  "run_id": "32594226382",
+  "status_ok": false,
+  "health": {
+    "status": "ok",
+    "configured": true,
+    "webhook_url": "https://bba5hgbd8seu96ko81bu.containers.yandexcloud.net/telegram/webhook",
+    "webhook_registered": true,
+    "delivery_mode": "direct-json-webhook-response",
+    "webhook_requests": 0,
+    "invalid_secret_requests": 0,
+    "start_requests": 0,
+    "last_update_id": null,
+    "last_start_at": null
+  },
+  "telegram": {
+    "diagnostic_error": "telegram_status_timeout_or_http_error"
+  },
+  "checked_at": "2026-08-22T19:38:08Z"
+}
