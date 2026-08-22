@@ -108,6 +108,9 @@ else
   say "Existing private bootstrap secrets found; reusing them for an idempotent retry"
 fi
 
+WEB_BUCKET="$(awk -F'"' '/^[[:space:]]*web_bucket_name[[:space:]]*=/{print $2; exit}' "$VARS_FILE")"
+[[ -n "$WEB_BUCKET" ]] || fail "Could not read web_bucket_name from private terraform.tfvars."
+
 cp "$VARS_FILE" terraform.tfvars
 if [[ -f "$STATE_FILE" ]]; then
   say "Existing Terraform state found; restoring it for a safe retry"
@@ -128,10 +131,39 @@ if [[ "${CONFIRM^^}" != "APPLY" ]]; then
   exit 0
 fi
 
-say "Creating Yandex Cloud resources — PostgreSQL may take several minutes"
+say "Creating remaining Yandex Cloud resources"
 terraform apply -input=false bootstrap.tfplan
 sync_state
 
+ensure_web_bucket() {
+  say "Ensuring Object Storage website bucket"
+
+  if yc storage bucket get --name "$WEB_BUCKET" --folder-id "$FOLDER_ID" >/dev/null 2>&1; then
+    printf 'Bucket %s already exists; updating public/website settings.\n' "$WEB_BUCKET"
+  else
+    yc storage bucket create \
+      --name "$WEB_BUCKET" \
+      --folder-id "$FOLDER_ID" \
+      --public-read \
+      --public-list \
+      --tags project=reverse-game,environment=production,managed_by=bootstrap \
+      >/dev/null
+  fi
+
+  yc storage bucket update \
+    --name "$WEB_BUCKET" \
+    --folder-id "$FOLDER_ID" \
+    --public-read \
+    --public-list \
+    --tags project=reverse-game,environment=production,managed_by=bootstrap \
+    --website-settings '{"index":"index.html","error":"index.html"}' \
+    >/dev/null
+
+  yc storage bucket get --name "$WEB_BUCKET" --folder-id "$FOLDER_ID" >/dev/null
+  printf 'Object Storage website bucket ready: %s\n' "$WEB_BUCKET"
+}
+
+ensure_web_bucket
 terraform output -json > "$OUTPUT_FILE"
 
 say "Bootstrap completed"
