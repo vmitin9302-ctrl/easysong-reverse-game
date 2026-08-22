@@ -20,8 +20,18 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  API_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID }}/reverse-game-api:${{ github.sha }}
-  BOT_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID }}/reverse-game-bot:${{ github.sha }}
+  YC_SA_ID: ${{ vars.YC_SA_ID || 'aje91e1lh5ku368rkp2i' }}
+  YC_FOLDER_ID: ${{ vars.YC_FOLDER_ID || 'b1gtc579k8imd81bb227' }}
+  YC_REGISTRY_ID: ${{ vars.YC_REGISTRY_ID || 'crp5evltachnf8imjg32' }}
+  YC_RUNTIME_SA_ID: ${{ vars.YC_RUNTIME_SA_ID || 'aje5ib01dp5ed3v6qmgk' }}
+  YC_NETWORK_ID: ${{ vars.YC_NETWORK_ID || 'enpq72hh3ugdq5lon530' }}
+  YC_LOCKBOX_SECRET_ID: ${{ vars.YC_LOCKBOX_SECRET_ID || 'e6qa23qqickfuqekoojj' }}
+  YC_LOG_GROUP_ID: ${{ vars.YC_LOG_GROUP_ID || 'e23povritvkp4nnsn3pq' }}
+  YC_WEB_BUCKET: ${{ vars.YC_WEB_BUCKET || 'easygame7-d81bb227-42b6a9' }}
+  PUBLIC_WEB_URL: ${{ vars.PUBLIC_WEB_URL || 'https://easygame7-d81bb227-42b6a9.website.yandexcloud.net' }}
+  OIDC_FEDERATION_ID: ${{ vars.OIDC_FEDERATION_ID || 'aje27hoijg3b8gdehibd' }}
+  API_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID || 'crp5evltachnf8imjg32' }}/reverse-game-api:${{ github.sha }}
+  BOT_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID || 'crp5evltachnf8imjg32' }}/reverse-game-bot:${{ github.sha }}
 
 jobs:
   configuration:
@@ -34,14 +44,16 @@ jobs:
         run: |
           ready=true
           for value in \
-            '${{ vars.YC_SA_ID }}' \
-            '${{ vars.YC_FOLDER_ID }}' \
-            '${{ vars.YC_REGISTRY_ID }}' \
-            '${{ vars.YC_RUNTIME_SA_ID }}' \
-            '${{ vars.YC_NETWORK_ID }}' \
-            '${{ vars.YC_LOCKBOX_SECRET_ID }}' \
-            '${{ vars.YC_LOG_GROUP_ID }}' \
-            '${{ vars.YC_WEB_BUCKET }}'; do
+            "$YC_SA_ID" \
+            "$YC_FOLDER_ID" \
+            "$YC_REGISTRY_ID" \
+            "$YC_RUNTIME_SA_ID" \
+            "$YC_NETWORK_ID" \
+            "$YC_LOCKBOX_SECRET_ID" \
+            "$YC_LOG_GROUP_ID" \
+            "$YC_WEB_BUCKET" \
+            "$PUBLIC_WEB_URL" \
+            "$OIDC_FEDERATION_ID"; do
             if [ -z "$value" ]; then ready=false; fi
           done
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
@@ -64,16 +76,12 @@ jobs:
         id: urls
         shell: bash
         run: |
-          web_url='${{ vars.PUBLIC_WEB_URL }}'
-          if [ -z "$web_url" ]; then
-            web_url='https://${{ vars.YC_WEB_BUCKET }}.website.yandexcloud.net'
-          fi
-          echo "web_url=$web_url" >> "$GITHUB_OUTPUT"
+          echo "web_url=$PUBLIC_WEB_URL" >> "$GITHUB_OUTPUT"
 
       - name: Login to Yandex Container Registry
         uses: yc-actions/yc-cr-login@v3
         with:
-          yc-sa-id: ${{ vars.YC_SA_ID }}
+          yc-sa-id: ${{ env.YC_SA_ID }}
 
       - name: Build API image
         run: docker build -f apps/api/Dockerfile -t "$API_IMAGE" .
@@ -91,50 +99,50 @@ jobs:
         id: deploy-api
         uses: yc-actions/yc-sls-container-deploy@v5
         with:
-          yc-sa-id: ${{ vars.YC_SA_ID }}
-          folder-id: ${{ vars.YC_FOLDER_ID }}
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          folder-id: ${{ env.YC_FOLDER_ID }}
           container-name: reverse-game-api
           public: true
-          revision-service-account-id: ${{ vars.YC_RUNTIME_SA_ID }}
+          revision-service-account-id: ${{ env.YC_RUNTIME_SA_ID }}
           revision-cores: 1
           revision-memory: 512Mb
           revision-core-fraction: 100
           revision-concurrency: 8
           revision-image-url: ${{ env.API_IMAGE }}
           revision-execution-timeout: 15
-          revision-network-id: ${{ vars.YC_NETWORK_ID }}
-          revision-log-options-log-group-id: ${{ vars.YC_LOG_GROUP_ID }}
+          revision-network-id: ${{ env.YC_NETWORK_ID }}
+          revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
           revision-log-options-min-level: info
           revision-env: |
             ALLOWED_ORIGINS=${{ steps.urls.outputs.web_url }}
             EASYSONG_URL=https://easysong.ru/webapp/auth?next=%2Fwebapp
           revision-secrets: |
-            DATABASE_URL=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/DATABASE_URL
-            SESSION_SECRET=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/SESSION_SECRET
-            TELEGRAM_BOT_TOKEN=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+            DATABASE_URL=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/DATABASE_URL
+            SESSION_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/SESSION_SECRET
+            TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
 
       - name: Deploy Telegram bot container shell
         id: deploy-bot
         uses: yc-actions/yc-sls-container-deploy@v5
         with:
-          yc-sa-id: ${{ vars.YC_SA_ID }}
-          folder-id: ${{ vars.YC_FOLDER_ID }}
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          folder-id: ${{ env.YC_FOLDER_ID }}
           container-name: reverse-game-bot
           public: true
-          revision-service-account-id: ${{ vars.YC_RUNTIME_SA_ID }}
+          revision-service-account-id: ${{ env.YC_RUNTIME_SA_ID }}
           revision-cores: 1
           revision-memory: 256Mb
           revision-core-fraction: 100
           revision-concurrency: 8
           revision-image-url: ${{ env.BOT_IMAGE }}
           revision-execution-timeout: 15
-          revision-log-options-log-group-id: ${{ vars.YC_LOG_GROUP_ID }}
+          revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
           revision-log-options-min-level: info
           revision-env: |
             TELEGRAM_WEBAPP_URL=${{ steps.urls.outputs.web_url }}
           revision-secrets: |
-            TELEGRAM_BOT_TOKEN=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
-            TELEGRAM_WEBHOOK_SECRET=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
+            TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+            TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
 
   web:
     needs: [configuration, containers]
@@ -161,8 +169,8 @@ jobs:
       - name: Upload web app to Yandex Object Storage
         uses: yc-actions/yc-obj-storage-upload@v4
         with:
-          yc-sa-id: ${{ vars.YC_SA_ID }}
-          bucket: ${{ vars.YC_WEB_BUCKET }}
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          bucket: ${{ env.YC_WEB_BUCKET }}
           root: ./apps/web/dist
           clear: true
           fail-on-error: true
@@ -180,25 +188,25 @@ jobs:
         id: configure-bot
         uses: yc-actions/yc-sls-container-deploy@v5
         with:
-          yc-sa-id: ${{ vars.YC_SA_ID }}
-          folder-id: ${{ vars.YC_FOLDER_ID }}
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          folder-id: ${{ env.YC_FOLDER_ID }}
           container-name: reverse-game-bot
           public: true
-          revision-service-account-id: ${{ vars.YC_RUNTIME_SA_ID }}
+          revision-service-account-id: ${{ env.YC_RUNTIME_SA_ID }}
           revision-cores: 1
           revision-memory: 256Mb
           revision-core-fraction: 100
           revision-concurrency: 8
           revision-image-url: ${{ env.BOT_IMAGE }}
           revision-execution-timeout: 15
-          revision-log-options-log-group-id: ${{ vars.YC_LOG_GROUP_ID }}
+          revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
           revision-log-options-min-level: info
           revision-env: |
             TELEGRAM_WEBAPP_URL=${{ needs.containers.outputs.web_url }}
             TELEGRAM_WEBHOOK_URL=https://${{ needs.containers.outputs.bot_id }}.containers.yandexcloud.net/telegram/webhook
           revision-secrets: |
-            TELEGRAM_BOT_TOKEN=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
-            TELEGRAM_WEBHOOK_SECRET=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
+            TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+            TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
 
       - name: Deployment summary
         shell: bash
