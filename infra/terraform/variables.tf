@@ -1,11 +1,13 @@
 variable "cloud_id" {
   description = "Yandex Cloud ID that contains the dedicated reverse-game folder."
   type        = string
+  default     = "b1gdd8mvsmaacivqjl15"
 }
 
 variable "folder_id" {
   description = "Dedicated Yandex Cloud folder ID for this project only."
   type        = string
+  default     = "b1gtc579k8imd81bb227"
 }
 
 variable "zone" {
