@@ -1,0 +1,58 @@
+name: Direct API Gateway Create Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/direct-gateway-create.yml'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get Yandex IAM token
+        id: iam
+        uses: docker://ghcr.io/yc-actions/yc-iam-token-fed:1.0.0
+        with:
+          yc-sa-id: aje91e1lh5ku368rkp2i
+      - name: Try direct Create API Gateway
+        shell: bash
+        env:
+          IAM_TOKEN: ${{ steps.iam.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          echo "::add-mask::$IAM_TOKEN"
+          spec="$(cat <<'SPEC'
+          openapi: 3.0.0
+          info:
+            title: EasySong Reverse Telegram Webhook
+            version: 1.0.0
+          paths:
+            /telegram/webhook:
+              post:
+                operationId: telegramWebhook
+                responses:
+                  '200':
+                    description: Telegram webhook response
+                x-yc-apigateway-integration:
+                  type: cloud_functions
+                  function_id: d4e7dgt8rdsj72mfc0c5
+                  service_account_id: aje91e1lh5ku368rkp2i
+                  payload_format_version: '1.0'
+          SPEC
+          )"
+          body="$(jq -nc --arg folder 'b1gtc579k8imd81bb227' --arg spec "$spec" '{folderId:$folder,name:"reverse-game-telegram-gateway-direct",description:"Direct create probe for Telegram ingress",openapiSpec:$spec}')"
+          code="$(curl --silent --show-error --output /tmp/result.json --write-out '%{http_code}' \
+            --request POST --header 'Content-Type: application/json' --header "Authorization: Bearer $IAM_TOKEN" \
+            --data "$body" 'https://serverless-apigateway.api.cloud.yandex.net/apigateways/v1/apigateways')"
+          jq -n --arg code "$code" --arg checked "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --slurpfile response /tmp/result.json '{http_code:($code|tonumber),response:$response[0],checked_at:$checked}' >/tmp/report.json
+          cat /tmp/report.json
+          content="$(base64 -w0 /tmp/report.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/ops/direct-gateway-create/${GITHUB_SHA}.json" -f message="ops: direct gateway create probe ${GITHUB_SHA} [skip ci]" -f content="$content" -f branch=main >/dev/null
