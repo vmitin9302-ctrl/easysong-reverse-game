@@ -1,11 +1,8 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 
-from aiogram import Bot, Dispatcher
-from aiogram.filters import CommandStart
-from aiogram.methods import SendMessage, TelegramMethod
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update, WebAppInfo
-from aiogram.utils.serialization import deserialize_telegram_object_to_python
+from aiogram import Bot
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,35 +18,35 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-dp = Dispatcher()
 bot: Bot | None = None
 webhook_registered = False
+webhook_requests = 0
+invalid_secret_requests = 0
+start_requests = 0
+last_update_id: int | None = None
+last_start_at: str | None = None
 
 
-@dp.message(CommandStart())
-async def start(message: Message) -> SendMessage:
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text='🎮 Играть',
-                    web_app=WebAppInfo(url=settings.telegram_webapp_url),
-                )
-            ]
-        ]
-    )
-    # Returning a TelegramMethod from a webhook handler makes Telegram execute
-    # sendMessage itself as the webhook response. This avoids a second outbound
-    # request from Yandex Serverless Container to api.telegram.org.
-    return SendMessage(
-        chat_id=message.chat.id,
-        text=(
+def build_start_response(chat_id: int) -> dict[str, Any]:
+    return {
+        'method': 'sendMessage',
+        'chat_id': chat_id,
+        'text': (
             '🎙 Сможешь говорить задом наперёд?\n\n'
             'Запиши фразу, услышь её наоборот и попробуй повторить. '
             'Посмотрим, сколько процентов ты наберёшь 😈'
         ),
-        reply_markup=keyboard,
-    )
+        'reply_markup': {
+            'inline_keyboard': [
+                [
+                    {
+                        'text': '🎮 Играть',
+                        'web_app': {'url': settings.telegram_webapp_url},
+                    }
+                ]
+            ]
+        },
+    }
 
 
 @asynccontextmanager
@@ -63,7 +60,7 @@ async def lifespan(_: FastAPI):
                 await bot.set_webhook(
                     url=settings.telegram_webhook_url,
                     secret_token=settings.telegram_webhook_secret or None,
-                    allowed_updates=dp.resolve_used_update_types(),
+                    allowed_updates=['message'],
                     drop_pending_updates=False,
                 )
             )
@@ -84,7 +81,12 @@ async def health() -> dict[str, Any]:
         'configured': bool(settings.telegram_bot_token),
         'webhook_url': settings.telegram_webhook_url,
         'webhook_registered': webhook_registered,
-        'delivery_mode': 'webhook-response',
+        'delivery_mode': 'direct-json-webhook-response',
+        'webhook_requests': webhook_requests,
+        'invalid_secret_requests': invalid_secret_requests,
+        'start_requests': start_requests,
+        'last_update_id': last_update_id,
+        'last_start_at': last_start_at,
     }
 
 
@@ -93,8 +95,6 @@ async def telegram_status() -> dict[str, Any]:
     if bot is None:
         raise HTTPException(status_code=503, detail='Telegram bot is not configured')
 
-    # Diagnostic endpoint only. Core /start delivery does not depend on these
-    # outbound Telegram API calls.
     webhook = await bot.get_webhook_info()
     return {
         'url': webhook.url,
@@ -107,26 +107,40 @@ async def telegram_status() -> dict[str, Any]:
 
 @app.post('/telegram/webhook')
 async def telegram_webhook(request: Request) -> JSONResponse:
+    global webhook_requests, invalid_secret_requests, start_requests, last_update_id, last_start_at
+
+    webhook_requests += 1
+
     if bot is None:
         raise HTTPException(status_code=503, detail='Telegram bot is not configured')
 
     if settings.telegram_webhook_secret:
         received = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
         if received != settings.telegram_webhook_secret:
+            invalid_secret_requests += 1
+            print('telegram_webhook invalid_secret', flush=True)
             raise HTTPException(status_code=401, detail='Invalid webhook secret')
 
     payload = await request.json()
-    update = Update.model_validate(payload, context={'bot': bot})
-    result = await dp.feed_update(bot, update)
+    update_id = payload.get('update_id')
+    if isinstance(update_id, int):
+        last_update_id = update_id
 
-    if isinstance(result, TelegramMethod):
-        # aiogram includes the Bot API method name (e.g. "sendMessage") and
-        # converts nested Telegram objects/defaults into JSON-compatible data.
-        response_payload = deserialize_telegram_object_to_python(
-            result,
-            default=bot.default,
-            include_api_method_name=True,
-        )
-        return JSONResponse(content=response_payload)
+    message = payload.get('message') or {}
+    text = message.get('text')
+    chat = message.get('chat') or {}
+    chat_id = chat.get('id')
+
+    print(
+        f'telegram_webhook update_id={update_id!r} text={text!r} chat_present={chat_id is not None}',
+        flush=True,
+    )
+
+    if isinstance(text, str) and text.split(maxsplit=1)[0].split('@', 1)[0] == '/start' and isinstance(chat_id, int):
+        start_requests += 1
+        last_start_at = datetime.now(timezone.utc).isoformat()
+        response = build_start_response(chat_id)
+        print(f'telegram_webhook start_response update_id={update_id!r}', flush=True)
+        return JSONResponse(content=response)
 
     return JSONResponse(content={'ok': True})
