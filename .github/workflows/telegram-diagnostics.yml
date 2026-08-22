@@ -1,0 +1,69 @@
+name: Telegram Delivery Diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/telegram-diagnostics.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: reverse-game-telegram-diagnostics
+  cancel-in-progress: true
+
+env:
+  BOT_URL: https://bba5hgbd8seu96ko81bu.containers.yandexcloud.net
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl --fail --silent --show-error --max-time 60 "$BOT_URL/health" > /tmp/health.json
+          jq . /tmp/health.json
+
+      - name: Read Telegram webhook info with long timeout
+        id: telegram_status
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if curl --fail --silent --show-error --max-time 180 "$BOT_URL/telegram/status" > /tmp/status.json; then
+            echo 'ok=true' >> "$GITHUB_OUTPUT"
+            jq . /tmp/status.json
+          else
+            echo 'ok=false' >> "$GITHUB_OUTPUT"
+            printf '{"diagnostic_error":"telegram_status_timeout_or_http_error"}\n' > /tmp/status.json
+          fi
+
+      - name: Record immutable diagnostic
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS_OK: ${{ steps.telegram_status.outputs.ok }}
+        run: |
+          set -Eeuo pipefail
+          status_path="ops/telegram-diagnostics/${GITHUB_SHA}.json"
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg status_ok "$STATUS_OK" \
+            --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --slurpfile health /tmp/health.json \
+            --slurpfile telegram /tmp/status.json \
+            '{commit:$commit,run_id:$run_id,status_ok:($status_ok=="true"),health:$health[0],telegram:$telegram[0],checked_at:$checked_at}' \
+            > /tmp/diagnostic.json
+          cat /tmp/diagnostic.json
+          content="$(base64 -w0 /tmp/diagnostic.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${status_path}" \
+            -f message="ops: record Telegram diagnostic ${GITHUB_SHA} [skip ci]" \
+            -f content="$content" \
+            -f branch=main >/dev/null
