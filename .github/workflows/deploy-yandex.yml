@@ -181,6 +181,9 @@ jobs:
           yc-sa-id: ${{ env.YC_SA_ID }}
           bucket: ${{ env.YC_WEB_BUCKET }}
           root: ./apps/web/dist
+          include: |
+            *
+            **/*
           clear: true
           fail-on-error: true
           cache-control: |
