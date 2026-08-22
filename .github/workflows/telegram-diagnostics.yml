@@ -1,5 +1,6 @@
 name: Telegram Delivery Diagnostics
 
+# Long-timeout check against Telegram getWebhookInfo via the production bot container.
 on:
   workflow_dispatch:
   push:
