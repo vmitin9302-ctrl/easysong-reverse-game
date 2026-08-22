@@ -8,7 +8,7 @@ PERSIST_ROOT="${HOME}/.reverse-game-bootstrap"
 WORK_ROOT="${TMPDIR:-/tmp}/reverse-game-bootstrap-${USER:-cloudshell}"
 REPO_DIR="${WORK_ROOT}/repo"
 TF_DIR="${REPO_DIR}/infra/terraform"
-TF_VERSION="1.13.2"
+TF_MIN_VERSION="1.5.7"
 VARS_FILE="${PERSIST_ROOT}/terraform.tfvars"
 STATE_FILE="${PERSIST_ROOT}/terraform.tfstate"
 OUTPUT_FILE="${PERSIST_ROOT}/reverse-game-outputs.json"
@@ -17,9 +17,9 @@ say() { printf '\n\033[1;35m%s\033[0m\n' "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
 command -v yc >/dev/null 2>&1 || fail "Yandex Cloud CLI (yc) is not available. Run this script from Yandex Cloud Shell."
+command -v terraform >/dev/null 2>&1 || fail "Terraform is not available in this Cloud Shell session."
 command -v curl >/dev/null 2>&1 || fail "curl is not available."
 command -v tar >/dev/null 2>&1 || fail "tar is not available."
-command -v unzip >/dev/null 2>&1 || fail "unzip is not available."
 command -v openssl >/dev/null 2>&1 || fail "openssl is not available."
 
 say "EasySong Reverse Game — Yandex Cloud bootstrap"
@@ -34,27 +34,12 @@ CURRENT_FOLDER="$(yc config get folder-id 2>/dev/null || true)"
 
 mkdir -p "$PERSIST_ROOT"
 
-install_terraform() {
-  say "Using isolated Terraform ${TF_VERSION} for this bootstrap"
-  local arch
-  case "$(uname -m)" in
-    x86_64|amd64) arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    *) fail "Unsupported architecture: $(uname -m)" ;;
-  esac
-
-  mkdir -p "${WORK_ROOT}/bin" "${WORK_ROOT}/downloads"
-  local zip="${WORK_ROOT}/downloads/terraform_${TF_VERSION}_linux_${arch}.zip"
-  curl -fL --retry 3 \
-    "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_${arch}.zip" \
-    -o "$zip"
-  unzip -oq "$zip" -d "${WORK_ROOT}/bin"
-  chmod +x "${WORK_ROOT}/bin/terraform"
-  export PATH="${WORK_ROOT}/bin:${PATH}"
-
-  local active_version
+check_terraform() {
+  local active_version oldest
   active_version="$(terraform version | head -n 1 | sed 's/^Terraform v//')"
-  [[ "$active_version" == "$TF_VERSION" ]] || fail "Expected Terraform ${TF_VERSION}, but active version is ${active_version}."
+  oldest="$(printf '%s\n%s\n' "$TF_MIN_VERSION" "$active_version" | sort -V | head -n 1)"
+  [[ "$oldest" == "$TF_MIN_VERSION" ]] || fail "Terraform ${active_version} is too old; expected ${TF_MIN_VERSION} or newer."
+  say "Using Yandex Cloud Shell Terraform ${active_version}"
 }
 
 prepare_repository() {
@@ -84,7 +69,7 @@ sync_state() {
 trap sync_state EXIT
 
 prepare_repository
-install_terraform
+check_terraform
 cd "$TF_DIR"
 
 # Use the current Cloud Shell identity only for the one-time bootstrap.
@@ -99,7 +84,6 @@ if [[ ! -f "$VARS_FILE" ]]; then
   IFS= read -r TELEGRAM_BOT_TOKEN
   [[ -n "$TELEGRAM_BOT_TOKEN" && "$TELEGRAM_BOT_TOKEN" == *:* ]] || fail "Telegram bot token does not look valid. Nothing was applied."
 
-  # Clear the terminal and scrollback after the token has been accepted.
   printf '\033[3J\033[2J\033[H'
   say "Telegram token accepted. Continuing securely."
 
@@ -111,13 +95,13 @@ if [[ ! -f "$VARS_FILE" ]]; then
 
   umask 077
   cat > "$VARS_FILE" <<EOF
-cloud_id                = "${CLOUD_ID}"
-folder_id               = "${FOLDER_ID}"
-web_bucket_name         = "${WEB_BUCKET}"
-db_password             = "${DB_PASSWORD}"
-session_secret          = "${SESSION_SECRET}"
-telegram_bot_token      = "${TELEGRAM_BOT_TOKEN}"
-telegram_webhook_secret = "${WEBHOOK_SECRET}"
+cloud_id                 = "${CLOUD_ID}"
+folder_id                = "${FOLDER_ID}"
+web_bucket_name          = "${WEB_BUCKET}"
+db_password              = "${DB_PASSWORD}"
+session_secret           = "${SESSION_SECRET}"
+telegram_bot_token       = "${TELEGRAM_BOT_TOKEN}"
+telegram_webhook_secret  = "${WEBHOOK_SECRET}"
 EOF
   unset TELEGRAM_BOT_TOKEN DB_PASSWORD SESSION_SECRET WEBHOOK_SECRET
 else
