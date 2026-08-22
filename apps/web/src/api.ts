@@ -16,6 +16,15 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export async function authenticateTelegram(initData: string): Promise<boolean> {
+  if (!hasApi || !initData) return false;
+  const result = await request<{ valid: boolean }>('/v1/auth/telegram', {
+    method: 'POST',
+    body: JSON.stringify({ init_data: initData }),
+  });
+  return result.valid;
+}
+
 export async function createGameSession(input: {
   source: string;
   platform: string;
@@ -35,38 +44,47 @@ export async function createGameSession(input: {
   return result.id;
 }
 
+function queueEvent(event: unknown) {
+  try {
+    const queue = JSON.parse(localStorage.getItem('reverse_game_event_queue') || '[]') as unknown[];
+    queue.push(event);
+    localStorage.setItem('reverse_game_event_queue', JSON.stringify(queue.slice(-50)));
+  } catch {
+    // Private browsing/storage restrictions must never break the game.
+  }
+}
+
 export async function trackEvent(
   sessionId: string | null,
   eventName: string,
   properties: Record<string, unknown> = {},
 ): Promise<void> {
   if (!hasApi) return;
+  const event = { session_id: sessionId, event_name: eventName, properties };
   try {
     await request('/v1/events', {
       method: 'POST',
-      body: JSON.stringify({ session_id: sessionId, event_name: eventName, properties }),
+      body: JSON.stringify(event),
     });
   } catch {
-    const queue = JSON.parse(localStorage.getItem('reverse_game_event_queue') || '[]') as unknown[];
-    queue.push({ session_id: sessionId, event_name: eventName, properties });
-    localStorage.setItem('reverse_game_event_queue', JSON.stringify(queue.slice(-50)));
+    queueEvent(event);
   }
 }
 
 export async function flushEventQueue(): Promise<void> {
   if (!hasApi) return;
-  const raw = localStorage.getItem('reverse_game_event_queue');
-  if (!raw) return;
-  const events = JSON.parse(raw) as unknown[];
-  if (!events.length) return;
   try {
+    const raw = localStorage.getItem('reverse_game_event_queue');
+    if (!raw) return;
+    const events = JSON.parse(raw) as unknown[];
+    if (!events.length) return;
     await request('/v1/events/batch', {
       method: 'POST',
       body: JSON.stringify({ events }),
     });
     localStorage.removeItem('reverse_game_event_queue');
   } catch {
-    // Keep the local queue for the next online attempt.
+    // Keep the queue for the next online attempt.
   }
 }
 
