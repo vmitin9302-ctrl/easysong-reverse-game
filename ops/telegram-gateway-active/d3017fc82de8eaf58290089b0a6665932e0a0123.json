@@ -1,0 +1,17 @@
+{
+  "status": "failed",
+  "commit": "d3017fc82de8eaf58290089b0a6665932e0a0123",
+  "run_id": "32595660166",
+  "steps": {
+    "prepare": "cancelled",
+    "probe": "skipped",
+    "activate": "skipped"
+  },
+  "gateway_id": "d5djlfnvtqd36klgs2dd",
+  "gateway_url": "",
+  "before_pending_updates": null,
+  "recovered_start_chats": null,
+  "pending_updates": null,
+  "last_error": null,
+  "checked_at": "2026-08-22T20:06:27Z"
+}
