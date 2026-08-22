@@ -1,6 +1,6 @@
 name: Telegram Delivery Diagnostics
 
-# Long-timeout check against Telegram getWebhookInfo via the production bot container.
+# Direct Telegram Bot API check from GitHub runner using Yandex OIDC + Lockbox.
 on:
   workflow_dispatch:
   push:
@@ -10,12 +10,15 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: reverse-game-telegram-diagnostics
   cancel-in-progress: true
 
 env:
+  YC_SA_ID: aje91e1lh5ku368rkp2i
+  YC_LOCKBOX_SECRET_ID: e6qa23qqickfuqekoojj
   BOT_URL: https://bba5hgbd8seu96ko81bu.containers.yandexcloud.net
 
 jobs:
@@ -24,47 +27,77 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read health
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          curl --fail --silent --show-error --max-time 60 "$BOT_URL/health" > /tmp/health.json
-          jq . /tmp/health.json
+      - name: Get Yandex Cloud IAM token via OIDC
+        id: iam
+        uses: docker://ghcr.io/yc-actions/yc-iam-token-fed:1.0.0
+        with:
+          yc-sa-id: ${{ env.YC_SA_ID }}
 
-      - name: Read Telegram webhook info with long timeout
-        id: telegram_status
-        continue-on-error: true
+      - name: Query production health and Telegram directly
+        id: probe
         shell: bash
+        env:
+          IAM_TOKEN: ${{ steps.iam.outputs.token }}
         run: |
           set -Eeuo pipefail
-          if curl --fail --silent --show-error --max-time 180 "$BOT_URL/telegram/status" > /tmp/status.json; then
-            echo 'ok=true' >> "$GITHUB_OUTPUT"
-            jq . /tmp/status.json
-          else
-            echo 'ok=false' >> "$GITHUB_OUTPUT"
-            printf '{"diagnostic_error":"telegram_status_timeout_or_http_error"}\n' > /tmp/status.json
-          fi
+          echo "::add-mask::$IAM_TOKEN"
+
+          curl --fail --silent --show-error --max-time 60 "$BOT_URL/health" > /tmp/health.json
+
+          payload="$(curl --fail --silent --show-error --max-time 60 \
+            -H "Authorization: Bearer $IAM_TOKEN" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/${YC_LOCKBOX_SECRET_ID}/payload")"
+
+          BOT_TOKEN="$(printf '%s' "$payload" | jq -r '.entries[] | select(.key == "TELEGRAM_BOT_TOKEN") | .textValue')"
+          test -n "$BOT_TOKEN"
+          test "$BOT_TOKEN" != null
+          echo "::add-mask::$BOT_TOKEN"
+
+          curl --fail --silent --show-error --max-time 60 \
+            "https://api.telegram.org/bot${BOT_TOKEN}/getMe" > /tmp/get-me.json
+          curl --fail --silent --show-error --max-time 60 \
+            "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo" > /tmp/webhook.json
+
+          jq -e '.ok == true' /tmp/get-me.json >/dev/null
+          jq -e '.ok == true' /tmp/webhook.json >/dev/null
+
+          jq -n \
+            --slurpfile health /tmp/health.json \
+            --slurpfile me /tmp/get-me.json \
+            --slurpfile hook /tmp/webhook.json \
+            '{
+              health: $health[0],
+              telegram: {
+                bot_id: $me[0].result.id,
+                username: $me[0].result.username,
+                webhook_url: $hook[0].result.url,
+                has_custom_certificate: $hook[0].result.has_custom_certificate,
+                pending_update_count: $hook[0].result.pending_update_count,
+                last_error_date: ($hook[0].result.last_error_date // null),
+                last_error_message: ($hook[0].result.last_error_message // null),
+                max_connections: ($hook[0].result.max_connections // null),
+                allowed_updates: ($hook[0].result.allowed_updates // [])
+              }
+            }' > /tmp/probe.json
+
+          cat /tmp/probe.json
 
       - name: Record immutable diagnostic
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          STATUS_OK: ${{ steps.telegram_status.outputs.ok }}
         run: |
           set -Eeuo pipefail
-          status_path="ops/telegram-diagnostics/${GITHUB_SHA}.json"
+          status_path="ops/telegram-direct-diagnostics/${GITHUB_SHA}.json"
           jq -n \
             --arg commit "$GITHUB_SHA" \
             --arg run_id "$GITHUB_RUN_ID" \
-            --arg status_ok "$STATUS_OK" \
             --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --slurpfile health /tmp/health.json \
-            --slurpfile telegram /tmp/status.json \
-            '{commit:$commit,run_id:$run_id,status_ok:($status_ok=="true"),health:$health[0],telegram:$telegram[0],checked_at:$checked_at}' \
+            --slurpfile probe /tmp/probe.json \
+            '{commit:$commit,run_id:$run_id,checked_at:$checked_at} + $probe[0]' \
             > /tmp/diagnostic.json
-          cat /tmp/diagnostic.json
           content="$(base64 -w0 /tmp/diagnostic.json)"
           gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${status_path}" \
-            -f message="ops: record Telegram diagnostic ${GITHUB_SHA} [skip ci]" \
+            -f message="ops: record direct Telegram diagnostic ${GITHUB_SHA} [skip ci]" \
             -f content="$content" \
             -f branch=main >/dev/null
