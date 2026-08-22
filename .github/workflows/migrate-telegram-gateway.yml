@@ -1,5 +1,6 @@
 name: Migrate Telegram Webhook to API Gateway
 
+# Final Telegram ingress migration: public API Gateway -> private Cloud Function.
 on:
   workflow_dispatch:
   push:
