@@ -100,24 +100,10 @@ resource "yandex_logging_group" "reverse_game" {
   folder_id = var.folder_id
 }
 
-resource "yandex_storage_bucket" "web" {
-  bucket        = var.web_bucket_name
-  folder_id     = var.folder_id
-  force_destroy = false
-
-  anonymous_access_flags {
-    read        = true
-    list        = true
-    config_read = false
-  }
-
-  website {
-    index_document = "index.html"
-    error_document = "index.html"
-  }
-
-  tags = local.labels
-}
+# Object Storage is intentionally managed by the bootstrap script through
+# the official `yc storage bucket` API. The Terraform storage resource uses
+# a separate S3/client path and can fail for user-account bootstrap tokens
+# even when the same folder works for all Resource Manager APIs.
 
 resource "yandex_mdb_postgresql_cluster_v2" "postgres" {
   name                = "reverse-game-postgres"
