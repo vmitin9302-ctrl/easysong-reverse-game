@@ -1,0 +1,18 @@
+{
+  "name": "easysong-reverse-game",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "packages/audio-engine"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace @reverse-game/web run dev",
+    "build": "npm --workspace @reverse-game/web run build",
+    "test": "npm --workspace @reverse-game/audio-engine run test && npm --workspace @reverse-game/web run test",
+    "typecheck": "npm --workspace @reverse-game/web run typecheck"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
