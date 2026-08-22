@@ -3,18 +3,22 @@ set -Eeuo pipefail
 
 CLOUD_ID="b1gdd8mvsmaacivqjl15"
 FOLDER_ID="b1gtc579k8imd81bb227"
-REPO_URL="https://github.com/vmitin9302-ctrl/easysong-reverse-game.git"
-WORK_ROOT="${HOME}/reverse-game-bootstrap"
+ARCHIVE_URL="https://github.com/vmitin9302-ctrl/easysong-reverse-game/archive/refs/heads/main.tar.gz"
+PERSIST_ROOT="${HOME}/.reverse-game-bootstrap"
+WORK_ROOT="${TMPDIR:-/tmp}/reverse-game-bootstrap-${USER:-cloudshell}"
 REPO_DIR="${WORK_ROOT}/repo"
 TF_DIR="${REPO_DIR}/infra/terraform"
 TF_VERSION="1.13.2"
+VARS_FILE="${PERSIST_ROOT}/terraform.tfvars"
+STATE_FILE="${PERSIST_ROOT}/terraform.tfstate"
+OUTPUT_FILE="${PERSIST_ROOT}/reverse-game-outputs.json"
 
 say() { printf '\n\033[1;35m%s\033[0m\n' "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
 command -v yc >/dev/null 2>&1 || fail "Yandex Cloud CLI (yc) is not available. Run this script from Yandex Cloud Shell."
-command -v git >/dev/null 2>&1 || fail "git is not available."
 command -v curl >/dev/null 2>&1 || fail "curl is not available."
+command -v tar >/dev/null 2>&1 || fail "tar is not available."
 command -v unzip >/dev/null 2>&1 || fail "unzip is not available."
 command -v openssl >/dev/null 2>&1 || fail "openssl is not available."
 
@@ -28,12 +32,14 @@ yc config set folder-id "$FOLDER_ID" >/dev/null
 CURRENT_FOLDER="$(yc config get folder-id 2>/dev/null || true)"
 [[ "$CURRENT_FOLDER" == "$FOLDER_ID" ]] || fail "yc is not configured for the expected folder."
 
+mkdir -p "$PERSIST_ROOT"
+
 install_terraform() {
   if command -v terraform >/dev/null 2>&1; then
     return
   fi
 
-  say "Terraform is not installed; installing a local copy ${TF_VERSION} into ~/.local/bin"
+  say "Terraform is not installed; installing a temporary copy ${TF_VERSION}"
   local arch
   case "$(uname -m)" in
     x86_64|amd64) arch="amd64" ;;
@@ -41,28 +47,45 @@ install_terraform() {
     *) fail "Unsupported architecture: $(uname -m)" ;;
   esac
 
-  mkdir -p "${HOME}/.local/bin" "${WORK_ROOT}/downloads"
+  mkdir -p "${WORK_ROOT}/bin" "${WORK_ROOT}/downloads"
   local zip="${WORK_ROOT}/downloads/terraform_${TF_VERSION}_linux_${arch}.zip"
   curl -fL --retry 3 \
     "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_${arch}.zip" \
     -o "$zip"
-  unzip -oq "$zip" -d "${HOME}/.local/bin"
-  chmod +x "${HOME}/.local/bin/terraform"
-  export PATH="${HOME}/.local/bin:${PATH}"
+  unzip -oq "$zip" -d "${WORK_ROOT}/bin"
+  chmod +x "${WORK_ROOT}/bin/terraform"
+  export PATH="${WORK_ROOT}/bin:${PATH}"
+  terraform version >/dev/null || fail "Terraform was downloaded but cannot be executed."
 }
 
+prepare_repository() {
+  say "Preparing repository archive"
+  rm -rf "$WORK_ROOT"
+  mkdir -p "$REPO_DIR" "${WORK_ROOT}/downloads"
+
+  local archive="${WORK_ROOT}/downloads/main.tar.gz"
+  curl -fL --retry 3 "$ARCHIVE_URL" -o "$archive"
+  tar -xzf "$archive" \
+    --strip-components=1 \
+    --no-same-owner \
+    --no-same-permissions \
+    -C "$REPO_DIR"
+
+  [[ -f "${TF_DIR}/main.tf" ]] || fail "Repository archive was downloaded, but Terraform files are missing."
+}
+
+sync_state() {
+  if [[ -n "${TF_DIR:-}" && -f "${TF_DIR}/terraform.tfstate" ]]; then
+    cp "${TF_DIR}/terraform.tfstate" "$STATE_FILE" || true
+  fi
+  if [[ -n "${TF_DIR:-}" && -f "${TF_DIR}/terraform.tfstate.backup" ]]; then
+    cp "${TF_DIR}/terraform.tfstate.backup" "${STATE_FILE}.backup" || true
+  fi
+}
+trap sync_state EXIT
+
+prepare_repository
 install_terraform
-
-say "Preparing repository"
-mkdir -p "$WORK_ROOT"
-if [[ -d "${REPO_DIR}/.git" ]]; then
-  git -C "$REPO_DIR" fetch origin main --quiet
-  git -C "$REPO_DIR" checkout main --quiet
-  git -C "$REPO_DIR" pull --ff-only origin main --quiet
-else
-  git clone --depth 1 --branch main "$REPO_URL" "$REPO_DIR"
-fi
-
 cd "$TF_DIR"
 
 # Use the current Cloud Shell identity only for the one-time bootstrap.
@@ -71,7 +94,7 @@ export YC_TOKEN="$(yc iam create-token)"
 export YC_CLOUD_ID="$CLOUD_ID"
 export YC_FOLDER_ID="$FOLDER_ID"
 
-if [[ ! -f terraform.tfvars ]]; then
+if [[ ! -f "$VARS_FILE" ]]; then
   say "Creating local bootstrap secrets"
   printf 'Paste the BotFather token for @easygame7_bot (input is hidden): '
   IFS= read -r -s TELEGRAM_BOT_TOKEN
@@ -85,18 +108,24 @@ if [[ ! -f terraform.tfvars ]]; then
   WEB_BUCKET="easygame7-${FOLDER_ID: -8}-${BUCKET_SUFFIX}"
 
   umask 077
-  cat > terraform.tfvars <<EOF
-cloud_id               = "${CLOUD_ID}"
-folder_id              = "${FOLDER_ID}"
-web_bucket_name        = "${WEB_BUCKET}"
-db_password            = "${DB_PASSWORD}"
-session_secret         = "${SESSION_SECRET}"
-telegram_bot_token     = "${TELEGRAM_BOT_TOKEN}"
+  cat > "$VARS_FILE" <<EOF
+cloud_id                = "${CLOUD_ID}"
+folder_id               = "${FOLDER_ID}"
+web_bucket_name         = "${WEB_BUCKET}"
+db_password             = "${DB_PASSWORD}"
+session_secret          = "${SESSION_SECRET}"
+telegram_bot_token      = "${TELEGRAM_BOT_TOKEN}"
 telegram_webhook_secret = "${WEBHOOK_SECRET}"
 EOF
   unset TELEGRAM_BOT_TOKEN DB_PASSWORD SESSION_SECRET WEBHOOK_SECRET
 else
-  say "Existing private terraform.tfvars found; reusing it for an idempotent retry"
+  say "Existing private bootstrap secrets found; reusing them for an idempotent retry"
+fi
+
+cp "$VARS_FILE" terraform.tfvars
+if [[ -f "$STATE_FILE" ]]; then
+  say "Existing Terraform state found; restoring it for a safe retry"
+  cp "$STATE_FILE" terraform.tfstate
 fi
 
 say "Validating infrastructure"
@@ -109,16 +138,15 @@ printf '\nTerraform plan is ready. Creating Managed PostgreSQL and other cloud r
 printf 'Type APPLY to create the resources, or anything else to stop: '
 IFS= read -r CONFIRM
 if [[ "$CONFIRM" != "APPLY" ]]; then
-  printf 'Stopped before terraform apply. You can rerun this same script later; local secrets were saved only in Cloud Shell.\n'
+  printf 'Stopped before terraform apply. You can rerun this same script later; private values remain only in your Cloud Shell home.\n'
   exit 0
 fi
 
 say "Creating Yandex Cloud resources — PostgreSQL may take several minutes"
 terraform apply -input=false bootstrap.tfplan
+sync_state
 
-OUTPUT_FILE="${WORK_ROOT}/reverse-game-outputs.json"
 terraform output -json > "$OUTPUT_FILE"
-chmod 600 "$OUTPUT_FILE"
 
 say "Bootstrap completed"
 printf 'Non-secret output file: %s\n\n' "$OUTPUT_FILE"
