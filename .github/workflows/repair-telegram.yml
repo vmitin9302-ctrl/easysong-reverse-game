@@ -1,0 +1,156 @@
+name: Repair Telegram Bot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/repair-telegram.yml'
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  YC_SA_ID: aje91e1lh5ku368rkp2i
+  YC_FOLDER_ID: b1gtc579k8imd81bb227
+  YC_REGISTRY_ID: crp5evltachnf8imjg32
+  YC_RUNTIME_SA_ID: aje5ib01dp5ed3v6qmgk
+  YC_LOCKBOX_SECRET_ID: e6qa23qqickfuqekoojj
+  YC_LOG_GROUP_ID: e23povritvkp4nnsn3pq
+  PUBLIC_WEB_URL: https://easygame7-d81bb227-42b6a9.website.yandexcloud.net
+  BOT_IMAGE: cr.yandex/crp5evltachnf8imjg32/reverse-game-bot:telegram-repair-${{ github.sha }}
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    outputs:
+      bot_id: ${{ steps.deploy-shell.outputs.id }}
+      webhook_url: ${{ steps.verify.outputs.webhook_url }}
+      bot_username: ${{ steps.verify.outputs.bot_username }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Yandex Container Registry
+        uses: yc-actions/yc-cr-login@v3
+        with:
+          yc-sa-id: ${{ env.YC_SA_ID }}
+
+      - name: Build and push Telegram bot image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker build -f apps/telegram-bot/Dockerfile -t "$BOT_IMAGE" .
+          docker push "$BOT_IMAGE"
+
+      - name: Deploy bot shell and resolve container id
+        id: deploy-shell
+        uses: yc-actions/yc-sls-container-deploy@v5
+        with:
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          folder-id: ${{ env.YC_FOLDER_ID }}
+          container-name: reverse-game-bot
+          public: true
+          revision-service-account-id: ${{ env.YC_RUNTIME_SA_ID }}
+          revision-cores: 1
+          revision-memory: 256Mb
+          revision-core-fraction: 100
+          revision-concurrency: 8
+          revision-image-url: ${{ env.BOT_IMAGE }}
+          revision-execution-timeout: 60
+          revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
+          revision-log-options-min-level: info
+          revision-env: |
+            TELEGRAM_WEBAPP_URL=${{ env.PUBLIC_WEB_URL }}
+          revision-secrets: |
+            TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+            TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
+
+      - name: Deploy final bot revision with webhook URL
+        uses: yc-actions/yc-sls-container-deploy@v5
+        with:
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          folder-id: ${{ env.YC_FOLDER_ID }}
+          container-name: reverse-game-bot
+          public: true
+          revision-service-account-id: ${{ env.YC_RUNTIME_SA_ID }}
+          revision-cores: 1
+          revision-memory: 256Mb
+          revision-core-fraction: 100
+          revision-concurrency: 8
+          revision-image-url: ${{ env.BOT_IMAGE }}
+          revision-execution-timeout: 60
+          revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
+          revision-log-options-min-level: info
+          revision-env: |
+            TELEGRAM_WEBAPP_URL=${{ env.PUBLIC_WEB_URL }}
+            TELEGRAM_WEBHOOK_URL=https://${{ steps.deploy-shell.outputs.id }}.containers.yandexcloud.net/telegram/webhook
+          revision-secrets: |
+            TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+            TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
+
+      - name: Warm and verify Telegram webhook
+        id: verify
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bot_url="https://${{ steps.deploy-shell.outputs.id }}.containers.yandexcloud.net"
+          expected="$bot_url/telegram/webhook"
+
+          for attempt in $(seq 1 24); do
+            if curl --fail --silent --show-error --max-time 15 "$bot_url/health" >/tmp/health.json; then
+              break
+            fi
+            sleep 5
+          done
+          cat /tmp/health.json
+
+          status="$(curl --fail --silent --show-error --max-time 20 "$bot_url/telegram/status")"
+          echo "$status" | jq .
+          actual="$(echo "$status" | jq -r '.url')"
+          username="$(echo "$status" | jq -r '.bot_username')"
+          last_error="$(echo "$status" | jq -r '.last_error // empty')"
+
+          test "$actual" = "$expected"
+          test -z "$last_error"
+
+          echo "webhook_url=$actual" >> "$GITHUB_OUTPUT"
+          echo "bot_username=$username" >> "$GITHUB_OUTPUT"
+
+      - name: Record success marker
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/status
+          cat >/tmp/status/telegram-status.json <<EOF
+          {
+            "status": "success",
+            "commit": "${GITHUB_SHA}",
+            "bot_id": "${{ steps.deploy-shell.outputs.id }}",
+            "bot_username": "${{ steps.verify.outputs.bot_username }}",
+            "webhook_url": "${{ steps.verify.outputs.webhook_url }}",
+            "web_url": "${PUBLIC_WEB_URL}",
+            "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          content="$(base64 -w0 /tmp/status/telegram-status.json)"
+          current_sha="$(gh api repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json" -f message='ops: record Telegram repair success [skip ci]' -f content="$content" -f branch=main)
+          if [ -n "$current_sha" ]; then args+=(-f sha="$current_sha"); fi
+          gh api "${args[@]}" >/dev/null
+
+      - name: Write failure marker
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          printf '{"status":"failed","commit":"%s","checked_at":"%s"}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/tmp/telegram-status.json
+          content="$(base64 -w0 /tmp/telegram-status.json)"
+          current_sha="$(gh api repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json" -f message='ops: record Telegram repair failure [skip ci]' -f content="$content" -f branch=main)
+          if [ -n "$current_sha" ]; then args+=(-f sha="$current_sha"); fi
+          gh api "${args[@]}" >/dev/null
