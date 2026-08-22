@@ -144,7 +144,7 @@ jobs:
           revision-core-fraction: 100
           revision-concurrency: 8
           revision-image-url: ${{ env.BOT_IMAGE }}
-          revision-execution-timeout: 15
+          revision-execution-timeout: 60
           revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
           revision-log-options-min-level: info
           revision-env: |
@@ -207,7 +207,7 @@ jobs:
           revision-core-fraction: 100
           revision-concurrency: 8
           revision-image-url: ${{ env.BOT_IMAGE }}
-          revision-execution-timeout: 15
+          revision-execution-timeout: 60
           revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
           revision-log-options-min-level: info
           revision-env: |
