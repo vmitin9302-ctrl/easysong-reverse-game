@@ -1,0 +1,30 @@
+{
+  "commit": "bfdfb7e0e19f36e257dfc5dc6b828ec98aa82336",
+  "run_id": "32594376204",
+  "checked_at": "2026-08-22T19:40:08Z",
+  "health": {
+    "status": "ok",
+    "configured": true,
+    "webhook_url": "https://bba5hgbd8seu96ko81bu.containers.yandexcloud.net/telegram/webhook",
+    "webhook_registered": true,
+    "delivery_mode": "direct-json-webhook-response",
+    "webhook_requests": 0,
+    "invalid_secret_requests": 0,
+    "start_requests": 0,
+    "last_update_id": null,
+    "last_start_at": null
+  },
+  "telegram": {
+    "bot_id": 8241535423,
+    "username": "easygame7_bot",
+    "webhook_url": "https://bba5hgbd8seu96ko81bu.containers.yandexcloud.net/telegram/webhook",
+    "has_custom_certificate": false,
+    "pending_update_count": 13,
+    "last_error_date": 1787427607,
+    "last_error_message": "Connection timed out",
+    "max_connections": 40,
+    "allowed_updates": [
+      "message"
+    ]
+  }
+}
