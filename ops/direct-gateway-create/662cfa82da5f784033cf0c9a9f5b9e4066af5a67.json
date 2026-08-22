@@ -1,0 +1,16 @@
+{
+  "http_code": 200,
+  "response": {
+    "done": false,
+    "metadata": {
+      "@type": "type.googleapis.com/yandex.cloud.serverless.apigateway.v1.CreateApiGatewayMetadata",
+      "apiGatewayId": "d5djlfnvtqd36klgs2dd"
+    },
+    "id": "d5dvq67iaoaa14s08pog",
+    "description": "operation_create",
+    "createdAt": "2026-08-22T20:04:01.986435007Z",
+    "createdBy": "aje91e1lh5ku368rkp2i",
+    "modifiedAt": "2026-08-22T20:04:01.986435007Z"
+  },
+  "checked_at": "2026-08-22T20:04:02Z"
+}
