@@ -14,6 +14,7 @@ locals {
     "functions.editor",
     "lockbox.viewer",
     "lockbox.payloadViewer",
+    "logging.editor",
     "logging.writer",
   ])
 
