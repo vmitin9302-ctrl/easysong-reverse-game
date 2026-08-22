@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     database_url: str | None = None
     easysong_url: str = 'https://easysong.ru/webapp/auth?next=%2Fwebapp'
     allowed_origins: str = 'http://localhost:5173'
+    session_secret: str = 'development-only-change-me'
+    telegram_bot_token: str | None = None
 
 
 settings = Settings()
