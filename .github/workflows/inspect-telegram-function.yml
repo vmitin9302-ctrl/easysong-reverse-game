@@ -1,5 +1,6 @@
 name: Inspect Telegram Cloud Function
 
+# Read-only inspection of the migration target.
 on:
   workflow_dispatch:
   push:
