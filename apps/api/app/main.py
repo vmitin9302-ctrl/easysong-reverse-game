@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .models import AnalyticsEvent, GameResult, GameSession, OutboundClick, ShareLink
 from .settings import settings
+from .telegram_auth import TelegramAuthError, validate_init_data
 
 
 class SessionCreate(BaseModel):
@@ -46,6 +47,10 @@ class ShareCreate(BaseModel):
     score: int = Field(ge=0, le=100)
 
 
+class TelegramAuthRequest(BaseModel):
+    init_data: str = Field(min_length=1, max_length=16_384)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if engine is not None:
@@ -66,6 +71,16 @@ app.add_middleware(
 @app.get('/health')
 def health() -> dict:
     return {'status': 'ok', 'database': engine is not None}
+
+
+@app.post('/v1/auth/telegram')
+def auth_telegram(payload: TelegramAuthRequest) -> dict:
+    if not settings.telegram_bot_token:
+        raise HTTPException(status_code=503, detail='Telegram auth is not configured')
+    try:
+        return validate_init_data(payload.init_data)
+    except TelegramAuthError as exc:
+        raise HTTPException(status_code=401, detail='Invalid Telegram init data') from exc
 
 
 @app.post('/v1/sessions', status_code=201)
