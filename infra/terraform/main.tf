@@ -77,7 +77,7 @@ resource "yandex_iam_workload_identity_oidc_federation" "github" {
   folder_id   = var.folder_id
   description = "Keyless GitHub Actions authentication for reverse-game"
   disabled    = false
-  audiences   = ["https://github.com/${var.github_owner}"]
+  audiences   = [yandex_iam_service_account.deploy.id]
   issuer      = "https://token.actions.githubusercontent.com"
   jwks_url    = "https://token.actions.githubusercontent.com/.well-known/jwks"
   labels      = local.labels
