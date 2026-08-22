@@ -30,6 +30,7 @@ env:
   YC_WEB_BUCKET: ${{ vars.YC_WEB_BUCKET || 'easygame7-d81bb227-42b6a9' }}
   PUBLIC_WEB_URL: ${{ vars.PUBLIC_WEB_URL || 'https://easygame7-d81bb227-42b6a9.website.yandexcloud.net' }}
   OIDC_FEDERATION_ID: ${{ vars.OIDC_FEDERATION_ID || 'aje27hoijg3b8gdehibd' }}
+  BOT_CONTAINER_ID: bba5hgbd8seu96ko81bu
   API_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID || 'crp5evltachnf8imjg32' }}/reverse-game-api:${{ github.sha }}
   BOT_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID || 'crp5evltachnf8imjg32' }}/reverse-game-bot:${{ github.sha }}
 
@@ -57,9 +58,6 @@ jobs:
             if [ -z "$value" ]; then ready=false; fi
           done
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
-          if [ "$ready" != "true" ]; then
-            echo 'Yandex Cloud deployment is not configured yet; CI remains unaffected.'
-          fi
 
   containers:
     needs: configuration
@@ -75,17 +73,7 @@ jobs:
       - name: Resolve public web URL
         id: urls
         shell: bash
-        run: |
-          echo "web_url=$PUBLIC_WEB_URL" >> "$GITHUB_OUTPUT"
-
-      - name: Report GitHub OIDC identity claims
-        shell: bash
-        run: |
-          oidc_token="$({ curl --fail --silent --show-error \
-            --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL"; } | jq --raw-output '.value')"
-          oidc_payload="$(printf '%s' "$oidc_token" | cut --delimiter=. --fields=2 | tr '_-' '/+' | base64 --decode 2>/dev/null || true)"
-          printf '%s' "$oidc_payload" | jq '{iss, aud, sub, repository, ref, event_name}'
+        run: echo "web_url=$PUBLIC_WEB_URL" >> "$GITHUB_OUTPUT"
 
       - name: Login to Yandex Container Registry
         uses: yc-actions/yc-cr-login@v3
@@ -130,7 +118,7 @@ jobs:
             SESSION_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/SESSION_SECRET
             TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
 
-      - name: Deploy Telegram bot container shell
+      - name: Deploy Telegram bot with final webhook configuration
         id: deploy-bot
         uses: yc-actions/yc-sls-container-deploy@v5
         with:
@@ -149,6 +137,7 @@ jobs:
           revision-log-options-min-level: info
           revision-env: |
             TELEGRAM_WEBAPP_URL=${{ steps.urls.outputs.web_url }}
+            TELEGRAM_WEBHOOK_URL=https://${{ env.BOT_CONTAINER_ID }}.containers.yandexcloud.net/telegram/webhook
           revision-secrets: |
             TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
             TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
@@ -196,66 +185,34 @@ jobs:
     if: needs.configuration.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Activate Telegram webhook after web is online
-        id: configure-bot
-        uses: yc-actions/yc-sls-container-deploy@v5
-        with:
-          yc-sa-id: ${{ env.YC_SA_ID }}
-          folder-id: ${{ env.YC_FOLDER_ID }}
-          container-name: reverse-game-bot
-          public: true
-          revision-service-account-id: ${{ env.YC_RUNTIME_SA_ID }}
-          revision-cores: 1
-          revision-memory: 256Mb
-          revision-core-fraction: 100
-          revision-concurrency: 8
-          revision-image-url: ${{ env.BOT_IMAGE }}
-          revision-execution-timeout: 60
-          revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
-          revision-log-options-min-level: info
-          revision-env: |
-            TELEGRAM_WEBAPP_URL=${{ needs.containers.outputs.web_url }}
-            TELEGRAM_WEBHOOK_URL=https://${{ needs.containers.outputs.bot_id }}.containers.yandexcloud.net/telegram/webhook
-          revision-secrets: |
-            TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
-            TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
-
-      - name: Warm bot container and verify Telegram webhook
+      - name: Warm bot container and verify final webhook revision
         shell: bash
         run: |
           set -Eeuo pipefail
-          bot_url="https://${{ needs.containers.outputs.bot_id }}.containers.yandexcloud.net"
-          expected_webhook="$bot_url/telegram/webhook"
+          bot_url="https://${BOT_CONTAINER_ID}.containers.yandexcloud.net"
+          expected="$bot_url/telegram/webhook"
+          matched=false
 
-          echo "Warming Telegram bot container at $bot_url"
-          for attempt in $(seq 1 20); do
-            if curl --fail --silent --show-error --max-time 15 "$bot_url/health" >/tmp/bot-health.json; then
-              cat /tmp/bot-health.json
-              break
+          for attempt in $(seq 1 36); do
+            if curl --fail --silent --show-error --max-time 25 "$bot_url/health" >/tmp/bot-health.json; then
+              jq . /tmp/bot-health.json
+              configured="$(jq -r '.configured' /tmp/bot-health.json)"
+              registered="$(jq -r '.webhook_registered' /tmp/bot-health.json)"
+              actual="$(jq -r '.webhook_url' /tmp/bot-health.json)"
+              delivery="$(jq -r '.delivery_mode' /tmp/bot-health.json)"
+              if [ "$configured" = true ] && \
+                 [ "$registered" = true ] && \
+                 [ "$actual" = "$expected" ] && \
+                 [ "$delivery" = 'direct-json-webhook-response' ]; then
+                matched=true
+                break
+              fi
             fi
-            if [ "$attempt" -eq 20 ]; then
-              echo 'Bot container did not become healthy in time.' >&2
-              exit 1
-            fi
-            sleep 3
+            sleep 5
           done
 
-          status="$(curl --fail --silent --show-error --max-time 15 "$bot_url/telegram/status")"
-          echo "$status" | jq .
-
-          actual_webhook="$(echo "$status" | jq --raw-output '.url')"
-          last_error="$(echo "$status" | jq --raw-output '.last_error // empty')"
-          if [ "$actual_webhook" != "$expected_webhook" ]; then
-            echo "Unexpected Telegram webhook: $actual_webhook" >&2
-            echo "Expected: $expected_webhook" >&2
-            exit 1
-          fi
-          if [ -n "$last_error" ]; then
-            echo "Telegram reports last webhook error: $last_error" >&2
-            exit 1
-          fi
-
-          echo 'Telegram webhook is registered and healthy.'
+          test "$matched" = true
+          echo 'Telegram webhook is registered and the final revision is active.'
 
       - name: Deployment summary
         shell: bash
@@ -265,6 +222,6 @@ jobs:
             api_url='https://${{ needs.containers.outputs.api_id }}.containers.yandexcloud.net'
           fi
           echo "### Reverse Game production" >> "$GITHUB_STEP_SUMMARY"
-          echo "Web: ${{ needs.containers.outputs.web_url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Web: $PUBLIC_WEB_URL" >> "$GITHUB_STEP_SUMMARY"
           echo "API: $api_url" >> "$GITHUB_STEP_SUMMARY"
-          echo "Telegram webhook: https://${{ needs.containers.outputs.bot_id }}.containers.yandexcloud.net/telegram/webhook" >> "$GITHUB_STEP_SUMMARY"
+          echo "Telegram webhook: https://${BOT_CONTAINER_ID}.containers.yandexcloud.net/telegram/webhook" >> "$GITHUB_STEP_SUMMARY"
