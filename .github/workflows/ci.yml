@@ -28,6 +28,7 @@ jobs:
       - run: pip install -r apps/api/requirements-dev.txt -r apps/telegram-bot/requirements.txt
       - run: python -m compileall -q apps/api apps/telegram-bot
       - run: PYTHONPATH=apps/api pytest -q apps/api/tests
+      - run: PYTHONPATH=apps/telegram-bot pytest -q apps/telegram-bot/tests
 
   terraform:
     runs-on: ubuntu-latest
