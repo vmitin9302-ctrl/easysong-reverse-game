@@ -77,7 +77,7 @@ resource "yandex_iam_workload_identity_oidc_federation" "github" {
   folder_id   = var.folder_id
   description = "Keyless GitHub Actions authentication for reverse-game"
   disabled    = false
-  audiences   = [yandex_iam_service_account.deploy.id]
+  audiences   = ["https://github.com/${var.github_owner}"]
   issuer      = "https://token.actions.githubusercontent.com"
   jwks_url    = "https://token.actions.githubusercontent.com/.well-known/jwks"
   labels      = local.labels
@@ -86,7 +86,7 @@ resource "yandex_iam_workload_identity_oidc_federation" "github" {
 resource "yandex_iam_workload_identity_federated_credential" "github_main" {
   service_account_id  = yandex_iam_service_account.deploy.id
   federation_id       = yandex_iam_workload_identity_oidc_federation.github.id
-  external_subject_id = "repo:${var.github_owner}/${var.github_repository}:ref:refs/heads/main"
+  external_subject_id = "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repository}@${var.github_repository_id}:ref:refs/heads/main"
 }
 
 resource "yandex_container_registry" "reverse_game" {

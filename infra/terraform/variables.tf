@@ -38,10 +38,22 @@ variable "github_owner" {
   default     = "vmitin9302-ctrl"
 }
 
+variable "github_owner_id" {
+  description = "Immutable GitHub owner ID included in customized OIDC subjects."
+  type        = string
+  default     = "317757263"
+}
+
 variable "github_repository" {
   description = "GitHub repository name used in the OIDC subject."
   type        = string
   default     = "easysong-reverse-game"
+}
+
+variable "github_repository_id" {
+  description = "Immutable GitHub repository ID included in customized OIDC subjects."
+  type        = string
+  default     = "1342959052"
 }
 
 variable "db_name" {
