@@ -12,6 +12,7 @@ locals {
     "iam.serviceAccounts.user",
     "vpc.user",
     "functions.editor",
+    "lockbox.viewer",
     "lockbox.payloadViewer",
     "logging.writer",
   ])
