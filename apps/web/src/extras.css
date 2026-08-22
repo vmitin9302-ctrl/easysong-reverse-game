@@ -1,0 +1,9 @@
+.challenge-badge {
+  margin: -8px 0 18px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  color: #6543dd;
+  background: #eee9ff;
+  font-size: 12px;
+  font-weight: 800;
+}
