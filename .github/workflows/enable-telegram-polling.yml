@@ -1,0 +1,216 @@
+name: Enable Telegram Polling Fallback
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/enable-telegram-polling.yml'
+      - 'apps/telegram-poller/**'
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: reverse-game-telegram-polling
+  cancel-in-progress: true
+
+env:
+  YC_SA_ID: aje91e1lh5ku368rkp2i
+  YC_FOLDER_ID: b1gtc579k8imd81bb227
+  YC_RUNTIME_SA_ID: aje5ib01dp5ed3v6qmgk
+  YC_LOCKBOX_SECRET_ID: e6qa23qqickfuqekoojj
+  YC_LOG_GROUP_ID: e23povritvkp4nnsn3pq
+  WEB_URL: https://easygame7-d81bb227-42b6a9.website.yandexcloud.net
+  TRIGGER_NAME: reverse-game-telegram-poller
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Telegram polling function
+        id: function
+        uses: yc-actions/yc-sls-function@v5
+        with:
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          folder-id: ${{ env.YC_FOLDER_ID }}
+          function-name: reverse-game-telegram-poller
+          runtime: python312
+          memory: 128Mb
+          execution-timeout: 30
+          entrypoint: index.handler
+          source-root: apps/telegram-poller
+          include: index.py
+          service-account: ${{ env.YC_RUNTIME_SA_ID }}
+          logs-group-id: ${{ env.YC_LOG_GROUP_ID }}
+          log-level: info
+          environment: TELEGRAM_WEBAPP_URL=${{ env.WEB_URL }}
+          secrets: TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+
+      - name: Get Yandex IAM token
+        id: iam
+        uses: docker://ghcr.io/yc-actions/yc-iam-token-fed:1.0.0
+        with:
+          yc-sa-id: ${{ env.YC_SA_ID }}
+
+      - name: Recover pending Telegram updates and test poller
+        id: recover
+        shell: bash
+        env:
+          IAM_TOKEN: ${{ steps.iam.outputs.token }}
+          FUNCTION_ID: ${{ steps.function.outputs.function-id }}
+        run: |
+          set -Eeuo pipefail
+          echo "::add-mask::$IAM_TOKEN"
+          test -n "$FUNCTION_ID"
+
+          lockbox="$(curl --fail --silent --show-error --max-time 60 \
+            -H "Authorization: Bearer $IAM_TOKEN" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/${YC_LOCKBOX_SECRET_ID}/payload")"
+          BOT_TOKEN="$(printf '%s' "$lockbox" | jq -r '.entries[] | select(.key=="TELEGRAM_BOT_TOKEN") | .textValue')"
+          test -n "$BOT_TOKEN"; test "$BOT_TOKEN" != null
+          echo "::add-mask::$BOT_TOKEN"
+
+          before="$(curl --fail --silent --show-error --max-time 60 "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo")"
+          before_pending="$(printf '%s' "$before" | jq -r '.result.pending_update_count')"
+          before_url="$(printf '%s' "$before" | jq -r '.result.url')"
+          before_error="$(printf '%s' "$before" | jq -r '.result.last_error_message // empty')"
+          echo "Before polling migration: url=$before_url pending=$before_pending error=$before_error"
+
+          # Disable the unreachable Serverless Containers webhook while preserving the queue.
+          curl --fail --silent --show-error --max-time 60 -X POST \
+            "https://api.telegram.org/bot${BOT_TOKEN}/deleteWebhook" \
+            --data-urlencode 'drop_pending_updates=false' | jq -e '.ok==true and .result==true' >/dev/null
+          sleep 2
+
+          updates="$(curl --fail --silent --show-error --max-time 60 \
+            "https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=-100&limit=100&timeout=0&allowed_updates=%5B%22message%22%5D")"
+          printf '%s' "$updates" >/tmp/updates.json
+          jq -e '.ok==true' /tmp/updates.json >/dev/null
+
+          count="$(jq '.result | length' /tmp/updates.json)"
+          max_id="$(jq -r '[.result[].update_id] | if length==0 then empty else max end' /tmp/updates.json)"
+          jq -r '[.result[] | select(.message.text? | strings | startswith("/start")) | .message.chat.id] | unique[]' \
+            /tmp/updates.json >/tmp/start-chats
+
+          recovered=0
+          while IFS= read -r chat_id; do
+            [ -n "$chat_id" ] || continue
+            message="$(jq -nc --argjson chat "$chat_id" --arg web "$WEB_URL" \
+              '{chat_id:$chat,text:"🎙 Сможешь говорить задом наперёд?\n\nЗапиши фразу, услышь её наоборот и попробуй повторить. Посмотрим, сколько процентов ты наберёшь 😈",reply_markup:{inline_keyboard:[[{text:"🎮 Играть",web_app:{url:$web}}]]}}')"
+            curl --fail --silent --show-error --max-time 60 \
+              -H 'Content-Type: application/json' -d "$message" \
+              "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" | jq -e '.ok==true' >/dev/null
+            recovered=$((recovered+1))
+          done </tmp/start-chats
+
+          if [ -n "$max_id" ]; then
+            next=$((max_id + 1))
+            curl --fail --silent --show-error --max-time 60 \
+              "https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${next}&limit=1&timeout=0&allowed_updates=%5B%22message%22%5D" \
+              | jq -e '.ok==true' >/dev/null
+          fi
+
+          # Invoke the private function once with our OIDC identity. This proves
+          # the function can reach api.telegram.org without any public endpoint.
+          poller_code="$(curl --silent --show-error --output /tmp/poller-response.txt --write-out '%{http_code}' \
+            --max-time 45 \
+            -H "Authorization: Bearer $IAM_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{}' \
+            "https://functions.yandexcloud.net/${FUNCTION_ID}")"
+          echo "Poller private invocation HTTP $poller_code"
+          cat /tmp/poller-response.txt
+          test "$poller_code" = 200
+
+          after="$(curl --fail --silent --show-error --max-time 60 "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo")"
+          after_url="$(printf '%s' "$after" | jq -r '.result.url')"
+          after_pending="$(printf '%s' "$after" | jq -r '.result.pending_update_count')"
+          test -z "$after_url"
+          test "$after_pending" = 0
+
+          echo "before_pending=$before_pending" >> "$GITHUB_OUTPUT"
+          echo "recovered=$recovered" >> "$GITHUB_OUTPUT"
+          echo "queue_count=$count" >> "$GITHUB_OUTPUT"
+          echo "after_pending=$after_pending" >> "$GITHUB_OUTPUT"
+
+      - name: Create or verify one-minute timer trigger
+        id: trigger
+        shell: bash
+        env:
+          IAM_TOKEN: ${{ steps.iam.outputs.token }}
+          FUNCTION_ID: ${{ steps.function.outputs.function-id }}
+        run: |
+          set -Eeuo pipefail
+          echo "::add-mask::$IAM_TOKEN"
+
+          list="$(curl --fail --silent --show-error --max-time 60 \
+            -H "Authorization: Bearer $IAM_TOKEN" \
+            "https://serverless-triggers.api.cloud.yandex.net/triggers/v1/triggers?folderId=${YC_FOLDER_ID}")"
+          trigger_id="$(printf '%s' "$list" | jq -r --arg name "$TRIGGER_NAME" '.triggers[]? | select(.name==$name) | .id' | head -n1)"
+
+          if [ -z "$trigger_id" ]; then
+            create_body="$(jq -nc \
+              --arg folder "$YC_FOLDER_ID" \
+              --arg name "$TRIGGER_NAME" \
+              --arg fn "$FUNCTION_ID" \
+              --arg sa "$YC_SA_ID" \
+              '{folderId:$folder,name:$name,description:"Poll @easygame7_bot every minute; fallback when Telegram cannot reach Serverless Containers",rule:{timer:{cronExpression:"* * ? * * *",payload:"{}",invokeFunction:{functionId:$fn,functionTag:"$latest",serviceAccountId:$sa}}}}')"
+            curl --fail --silent --show-error --max-time 60 \
+              -X POST -H 'Content-Type: application/json' -H "Authorization: Bearer $IAM_TOKEN" \
+              -d "$create_body" \
+              'https://serverless-triggers.api.cloud.yandex.net/triggers/v1/triggers' >/tmp/create-trigger.json
+            cat /tmp/create-trigger.json | jq .
+
+            for attempt in $(seq 1 20); do
+              sleep 2
+              list="$(curl --fail --silent --show-error --max-time 60 \
+                -H "Authorization: Bearer $IAM_TOKEN" \
+                "https://serverless-triggers.api.cloud.yandex.net/triggers/v1/triggers?folderId=${YC_FOLDER_ID}")"
+              trigger_id="$(printf '%s' "$list" | jq -r --arg name "$TRIGGER_NAME" '.triggers[]? | select(.name==$name) | .id' | head -n1)"
+              [ -n "$trigger_id" ] && break
+            done
+          fi
+
+          test -n "$trigger_id"
+          trigger="$(curl --fail --silent --show-error --max-time 60 \
+            -H "Authorization: Bearer $IAM_TOKEN" \
+            "https://serverless-triggers.api.cloud.yandex.net/triggers/v1/triggers/${trigger_id}")"
+          cat <<<"$trigger" | jq .
+          cron="$(printf '%s' "$trigger" | jq -r '.rule.timer.cronExpression')"
+          test "$cron" = '* * ? * * *'
+
+          echo "trigger_id=$trigger_id" >> "$GITHUB_OUTPUT"
+          echo "cron=$cron" >> "$GITHUB_OUTPUT"
+
+      - name: Record polling fallback result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FUNCTION_OUTCOME: ${{ steps.function.outcome }}
+          RECOVER_OUTCOME: ${{ steps.recover.outcome }}
+          TRIGGER_OUTCOME: ${{ steps.trigger.outcome }}
+          FUNCTION_ID: ${{ steps.function.outputs.function-id }}
+          TRIGGER_ID: ${{ steps.trigger.outputs.trigger_id }}
+        run: |
+          set -Eeuo pipefail
+          status=failed
+          [ "$FUNCTION_OUTCOME" = success ] && [ "$RECOVER_OUTCOME" = success ] && [ "$TRIGGER_OUTCOME" = success ] && status=success
+          jq -n \
+            --arg status "$status" --arg commit "$GITHUB_SHA" --arg run_id "$GITHUB_RUN_ID" \
+            --arg function_outcome "$FUNCTION_OUTCOME" --arg recover_outcome "$RECOVER_OUTCOME" --arg trigger_outcome "$TRIGGER_OUTCOME" \
+            --arg function_id "$FUNCTION_ID" --arg trigger_id "$TRIGGER_ID" \
+            --arg before '${{ steps.recover.outputs.before_pending }}' --arg recovered '${{ steps.recover.outputs.recovered }}' \
+            --arg after '${{ steps.recover.outputs.after_pending }}' --arg cron '${{ steps.trigger.outputs.cron }}' \
+            --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{status:$status,commit:$commit,run_id:$run_id,steps:{function:$function_outcome,recover:$recover_outcome,trigger:$trigger_outcome},function_id:$function_id,trigger_id:$trigger_id,mode:"polling",cron:$cron,before_pending_updates:(if $before=="" then null else ($before|tonumber) end),recovered_start_chats:(if $recovered=="" then null else ($recovered|tonumber) end),pending_updates:(if $after=="" then null else ($after|tonumber) end),checked_at:$checked_at}' >/tmp/result.json
+          content="$(base64 -w0 /tmp/result.json)"
+          path="ops/telegram-polling/${GITHUB_SHA}.json"
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f message="ops: record Telegram polling fallback ${GITHUB_SHA} [skip ci]" -f content="$content" -f branch=main)
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
