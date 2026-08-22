@@ -1,5 +1,6 @@
 name: Repair Telegram Bot
 
+# Final isolated repair after production deploy race fix.
 on:
   workflow_dispatch:
   push:
