@@ -1,6 +1,5 @@
 name: Repair Telegram Bot
 
-# Self-verifying production repair for @easygame7_bot.
 on:
   workflow_dispatch:
   push:
@@ -12,6 +11,10 @@ on:
 permissions:
   contents: write
   id-token: write
+
+concurrency:
+  group: reverse-game-telegram-repair
+  cancel-in-progress: true
 
 env:
   YC_SA_ID: aje91e1lh5ku368rkp2i
@@ -53,29 +56,16 @@ jobs:
         run: |
           set -Eeuo pipefail
           docker run --rm -i "$BOT_IMAGE" python - <<'PY'
-          import asyncio
-          from datetime import datetime, timezone
-          from aiogram.methods import SendMessage
-          from aiogram.types import Chat, Message, User
-          from aiogram.utils.serialization import deserialize_telegram_object_to_python
-          from app import start
+          from app import build_start_response
 
-          message = Message(
-              message_id=1,
-              date=datetime.now(timezone.utc),
-              chat=Chat(id=123456, type='private'),
-              from_user=User(id=123456, is_bot=False, first_name='Smoke'),
-              text='/start',
-          )
-          result = asyncio.run(start(message))
-          assert isinstance(result, SendMessage)
-          payload = deserialize_telegram_object_to_python(result)
+          payload = build_start_response(123456)
           assert payload['method'] == 'sendMessage'
+          assert payload['chat_id'] == 123456
           assert 'Сможешь говорить задом наперёд?' in payload['text']
           button = payload['reply_markup']['inline_keyboard'][0][0]
           assert button['text'] == '🎮 Играть'
           assert button['web_app']['url']
-          print('direct webhook /start response smoke test: OK')
+          print('direct JSON webhook /start response smoke test: OK')
           PY
 
       - name: Deploy final Telegram bot revision
@@ -122,7 +112,7 @@ jobs:
               if [ "$configured" = true ] && \
                  [ "$registered" = true ] && \
                  [ "$actual" = "$expected" ] && \
-                 [ "$delivery" = 'webhook-response' ]; then
+                 [ "$delivery" = 'direct-json-webhook-response' ]; then
                 matched=true
                 break
               fi
@@ -133,7 +123,7 @@ jobs:
 
           test "$matched" = true
           echo "webhook_url=$expected" >> "$GITHUB_OUTPUT"
-          echo 'Telegram setWebhook succeeded; final revision is active; direct /start response is enabled.'
+          echo 'Telegram setWebhook succeeded; direct JSON /start response is active.'
 
       - name: Record success marker
         id: record_success
@@ -142,8 +132,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          mkdir -p /tmp/status
-          cat >/tmp/status/telegram-status.json <<EOF
+          cat >/tmp/telegram-status.json <<EOF
           {
             "status": "success",
             "commit": "${GITHUB_SHA}",
@@ -152,12 +141,12 @@ jobs:
             "bot_username": "easygame7_bot",
             "webhook_url": "${{ steps.verify.outputs.webhook_url }}",
             "web_url": "${PUBLIC_WEB_URL}",
-            "delivery_mode": "webhook-response",
+            "delivery_mode": "direct-json-webhook-response",
             "smoke_test": "success",
             "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
-          content="$(base64 -w0 /tmp/status/telegram-status.json)"
+          content="$(base64 -w0 /tmp/telegram-status.json)"
           current_sha="$(gh api repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json --jq .sha 2>/dev/null || true)"
           args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json" -f message='ops: record Telegram repair success [skip ci]' -f content="$content" -f branch=main)
           if [ -n "$current_sha" ]; then args+=(-f sha="$current_sha"); fi
