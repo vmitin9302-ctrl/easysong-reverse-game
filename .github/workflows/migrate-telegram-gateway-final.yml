@@ -1,0 +1,189 @@
+name: Final Telegram Gateway Migration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/migrate-telegram-gateway-final.yml'
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: reverse-game-telegram-gateway-final
+  cancel-in-progress: true
+
+env:
+  YC_SA_ID: aje91e1lh5ku368rkp2i
+  YC_FOLDER_ID: b1gtc579k8imd81bb227
+  YC_RUNTIME_SA_ID: aje5ib01dp5ed3v6qmgk
+  YC_LOCKBOX_SECRET_ID: e6qa23qqickfuqekoojj
+  YC_LOG_GROUP_ID: e23povritvkp4nnsn3pq
+  WEB_URL: https://easygame7-d81bb227-42b6a9.website.yandexcloud.net
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy private Telegram function
+        id: function
+        uses: yc-actions/yc-sls-function@v5
+        with:
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          folder-id: ${{ env.YC_FOLDER_ID }}
+          function-name: reverse-game-telegram-webhook
+          runtime: python312
+          memory: 128Mb
+          execution-timeout: 5
+          entrypoint: index.handler
+          source-root: apps/telegram-function
+          include: index.py
+          service-account: ${{ env.YC_RUNTIME_SA_ID }}
+          logs-group-id: ${{ env.YC_LOG_GROUP_ID }}
+          log-level: info
+          environment: TELEGRAM_WEBAPP_URL=${{ env.WEB_URL }}
+          secrets: TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
+
+      - name: Generate Gateway spec
+        id: spec
+        shell: bash
+        env:
+          FUNCTION_ID: ${{ steps.function.outputs.function-id }}
+        run: |
+          set -Eeuo pipefail
+          cat > telegram-gateway.yaml <<EOF
+          openapi: 3.0.0
+          info:
+            title: EasySong Reverse Telegram Webhook
+            version: 1.0.0
+          paths:
+            /telegram/webhook:
+              post:
+                operationId: telegramWebhook
+                responses:
+                  '200':
+                    description: Telegram webhook response
+                x-yc-apigateway-integration:
+                  type: cloud_functions
+                  function_id: ${FUNCTION_ID}
+                  service_account_id: ${YC_SA_ID}
+                  payload_format_version: '1.0'
+          EOF
+
+      - name: Deploy public API Gateway with OIDC
+        id: gateway
+        uses: yc-actions/yc-api-gateway-deploy@5120dfedad37425d72d252bebb49cf9021118894
+        with:
+          yc-sa-id: ${{ env.YC_SA_ID }}
+          folder-id: ${{ env.YC_FOLDER_ID }}
+          gateway-name: reverse-game-telegram-gateway
+          spec-file: telegram-gateway.yaml
+
+      - name: Get Yandex IAM token
+        id: iam
+        uses: docker://ghcr.io/yc-actions/yc-iam-token-fed:1.0.0
+        with:
+          yc-sa-id: ${{ env.YC_SA_ID }}
+
+      - name: Load Telegram credentials
+        id: creds
+        shell: bash
+        env:
+          IAM_TOKEN: ${{ steps.iam.outputs.token }}
+        run: |
+          set -Eeuo pipefail
+          echo "::add-mask::$IAM_TOKEN"
+          payload="$(curl --fail --silent --show-error -H "Authorization: Bearer $IAM_TOKEN" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/${YC_LOCKBOX_SECRET_ID}/payload")"
+          BOT_TOKEN="$(printf '%s' "$payload" | jq -r '.entries[] | select(.key=="TELEGRAM_BOT_TOKEN") | .textValue')"
+          WEBHOOK_SECRET="$(printf '%s' "$payload" | jq -r '.entries[] | select(.key=="TELEGRAM_WEBHOOK_SECRET") | .textValue')"
+          test -n "$BOT_TOKEN"; test -n "$WEBHOOK_SECRET"
+          echo "::add-mask::$BOT_TOKEN"; echo "::add-mask::$WEBHOOK_SECRET"
+          printf '%s' "$BOT_TOKEN" >/tmp/bot-token
+          printf '%s' "$WEBHOOK_SECRET" >/tmp/webhook-secret
+
+      - name: Probe Gateway /start response
+        id: probe
+        shell: bash
+        env:
+          DOMAIN: ${{ steps.gateway.outputs.domain }}
+        run: |
+          set -Eeuo pipefail
+          case "$DOMAIN" in http://*|https://*) base="$DOMAIN";; *) base="https://$DOMAIN";; esac
+          url="${base%/}/telegram/webhook"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          secret="$(cat /tmp/webhook-secret)"
+          body='{"update_id":999999003,"message":{"message_id":1,"date":1787420000,"chat":{"id":123456,"type":"private"},"from":{"id":123456,"is_bot":false,"first_name":"Smoke"},"text":"/start"}}'
+          ok=false
+          for i in $(seq 1 30); do
+            code="$(curl -sS -o /tmp/probe.json -w '%{http_code}' --max-time 15 -H 'Content-Type: application/json' -H "X-Telegram-Bot-Api-Secret-Token: $secret" -d "$body" "$url" || true)"
+            if [ "$code" = 200 ] && jq -e '.method=="sendMessage" and .chat_id==123456' /tmp/probe.json >/dev/null 2>&1; then ok=true; break; fi
+            echo "probe $i/30 HTTP=$code"; cat /tmp/probe.json 2>/dev/null || true; sleep 3
+          done
+          test "$ok" = true
+
+      - name: Recover queued starts and switch webhook
+        id: switch
+        shell: bash
+        env:
+          URL: ${{ steps.probe.outputs.url }}
+        run: |
+          set -Eeuo pipefail
+          token="$(cat /tmp/bot-token)"; secret="$(cat /tmp/webhook-secret)"
+          before="$(curl -fsS "https://api.telegram.org/bot${token}/getWebhookInfo")"
+          before_pending="$(echo "$before" | jq -r '.result.pending_update_count')"
+          echo "pending before=$before_pending"
+
+          curl -fsS -X POST "https://api.telegram.org/bot${token}/deleteWebhook" --data-urlencode 'drop_pending_updates=false' | jq -e '.ok==true' >/dev/null
+          sleep 2
+          curl -fsS "https://api.telegram.org/bot${token}/getUpdates?limit=100&timeout=0&allowed_updates=%5B%22message%22%5D" >/tmp/updates.json
+          jq -e '.ok==true' /tmp/updates.json >/dev/null
+          jq -r '[.result[] | select(.message.text? | strings | startswith("/start")) | .message.chat.id] | unique[]' /tmp/updates.json >/tmp/chats
+
+          recovered=0
+          while read -r chat_id; do
+            [ -n "$chat_id" ] || continue
+            payload="$(jq -nc --argjson c "$chat_id" --arg w "$WEB_URL" '{chat_id:$c,text:"🎙 Сможешь говорить задом наперёд?\n\nЗапиши фразу, услышь её наоборот и попробуй повторить. Посмотрим, сколько процентов ты наберёшь 😈",reply_markup:{inline_keyboard:[[{text:"🎮 Играть",web_app:{url:$w}}]]}}')"
+            curl -fsS -H 'Content-Type: application/json' -d "$payload" "https://api.telegram.org/bot${token}/sendMessage" | jq -e '.ok==true' >/dev/null
+            recovered=$((recovered+1))
+          done </tmp/chats
+
+          curl -fsS -X POST "https://api.telegram.org/bot${token}/setWebhook" \
+            --data-urlencode "url=${URL}" --data-urlencode "secret_token=${secret}" \
+            --data-urlencode 'allowed_updates=["message"]' --data-urlencode 'drop_pending_updates=true' | jq -e '.ok==true and .result==true' >/dev/null
+          sleep 3
+          final="$(curl -fsS "https://api.telegram.org/bot${token}/getWebhookInfo")"
+          actual="$(echo "$final" | jq -r '.result.url')"; pending="$(echo "$final" | jq -r '.result.pending_update_count')"; err="$(echo "$final" | jq -r '.result.last_error_message // empty')"
+          test "$actual" = "$URL"; test "$pending" = 0
+          echo "before=$before_pending" >> "$GITHUB_OUTPUT"; echo "recovered=$recovered" >> "$GITHUB_OUTPUT"; echo "pending=$pending" >> "$GITHUB_OUTPUT"
+          { echo 'error<<EOF'; echo "$err"; echo 'EOF'; } >> "$GITHUB_OUTPUT"
+
+      - name: Record result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FUNCTION: ${{ steps.function.outcome }}
+          SPEC: ${{ steps.spec.outcome }}
+          GATEWAY: ${{ steps.gateway.outcome }}
+          CREDS: ${{ steps.creds.outcome }}
+          PROBE: ${{ steps.probe.outcome }}
+          SWITCH: ${{ steps.switch.outcome }}
+          FUNCTION_ID: ${{ steps.function.outputs.function-id }}
+          GATEWAY_ID: ${{ steps.gateway.outputs.id }}
+          URL: ${{ steps.probe.outputs.url }}
+        run: |
+          set -Eeuo pipefail
+          status=failed; [ "$SWITCH" = success ] && status=success
+          jq -n --arg status "$status" --arg commit "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
+            --arg function "$FUNCTION" --arg spec "$SPEC" --arg gateway "$GATEWAY" --arg creds "$CREDS" --arg probe "$PROBE" --arg switch "$SWITCH" \
+            --arg function_id "$FUNCTION_ID" --arg gateway_id "$GATEWAY_ID" --arg url "$URL" \
+            --arg before '${{ steps.switch.outputs.before }}' --arg recovered '${{ steps.switch.outputs.recovered }}' --arg pending '${{ steps.switch.outputs.pending }}' --arg error '${{ steps.switch.outputs.error }}' \
+            --arg checked "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{status:$status,commit:$commit,run_id:$run,steps:{function:$function,spec:$spec,gateway:$gateway,creds:$creds,probe:$probe,switch:$switch},function_id:$function_id,gateway_id:$gateway_id,gateway_url:$url,before_pending_updates:(if $before=="" then null else ($before|tonumber) end),recovered_start_chats:(if $recovered=="" then null else ($recovered|tonumber) end),pending_updates:(if $pending=="" then null else ($pending|tonumber) end),last_error:(if $error=="" then null else $error end),checked_at:$checked}' >/tmp/result.json
+          content="$(base64 -w0 /tmp/result.json)"; path="ops/telegram-gateway-final/${GITHUB_SHA}.json"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f message="ops: record final Telegram gateway migration ${GITHUB_SHA} [skip ci]" -f content="$content" -f branch=main >/dev/null
