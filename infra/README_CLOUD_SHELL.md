@@ -1,0 +1,1 @@
+If Yandex Cloud Shell reports `chmod ... .git/config.lock failed: Operation not permitted`, rerun the current bootstrap from `main`. Revision 2 downloads the repository archive into `/tmp` and does not use `git clone` on the persistent Cloud Shell home filesystem.
