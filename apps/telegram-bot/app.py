@@ -22,11 +22,12 @@ settings = Settings()
 dp = Dispatcher()
 bot: Bot | None = None
 webhook_status = 'not_configured'
+webhook_details: dict[str, object] = {}
 logger = logging.getLogger(__name__)
 
 
 async def configure_webhook() -> None:
-    global webhook_status
+    global webhook_details, webhook_status
     if bot is None or not settings.telegram_webhook_url:
         return
 
@@ -40,6 +41,13 @@ async def configure_webhook() -> None:
             ),
             timeout=15,
         )
+        identity, webhook = await asyncio.gather(bot.get_me(), bot.get_webhook_info())
+        webhook_details = {
+            'bot_username': identity.username,
+            'url': webhook.url,
+            'pending_updates': webhook.pending_update_count,
+            'last_error': webhook.last_error_message,
+        }
         webhook_status = 'ok'
     except Exception:
         webhook_status = 'error'
@@ -91,6 +99,7 @@ async def health() -> dict:
         'status': 'ok',
         'configured': bool(settings.telegram_bot_token),
         'webhook': webhook_status,
+        'webhook_details': webhook_details,
     }
 
 
