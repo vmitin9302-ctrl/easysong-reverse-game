@@ -1,0 +1,11 @@
+{
+  "function_found": true,
+  "function_id": "d4e7dgt8rdsj72mfc0c5",
+  "function_url": "https://functions.yandexcloud.net/d4e7dgt8rdsj72mfc0c5",
+  "access_bindings": null,
+  "public_probe": {
+    "http_code": "403",
+    "body": "{\"errorCode\":403,\"errorMessage\":\"Forbidden: Not authorized\",\"errorType\":\"ClientError\"}"
+  },
+  "checked_at": "2026-08-22T19:52:19Z"
+}
