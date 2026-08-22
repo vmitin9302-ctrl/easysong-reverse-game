@@ -1,5 +1,6 @@
 name: Direct API Gateway Create Probe
 
+# Bypasses ApiGatewayService.List and tests Create permission directly.
 on:
   workflow_dispatch:
   push:
@@ -49,9 +50,7 @@ jobs:
           SPEC
           )"
           body="$(jq -nc --arg folder 'b1gtc579k8imd81bb227' --arg spec "$spec" '{folderId:$folder,name:"reverse-game-telegram-gateway-direct",description:"Direct create probe for Telegram ingress",openapiSpec:$spec}')"
-          code="$(curl --silent --show-error --output /tmp/result.json --write-out '%{http_code}' \
-            --request POST --header 'Content-Type: application/json' --header "Authorization: Bearer $IAM_TOKEN" \
-            --data "$body" 'https://serverless-apigateway.api.cloud.yandex.net/apigateways/v1/apigateways')"
+          code="$(curl --silent --show-error --output /tmp/result.json --write-out '%{http_code}' --request POST --header 'Content-Type: application/json' --header "Authorization: Bearer $IAM_TOKEN" --data "$body" 'https://serverless-apigateway.api.cloud.yandex.net/apigateways/v1/apigateways')"
           jq -n --arg code "$code" --arg checked "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --slurpfile response /tmp/result.json '{http_code:($code|tonumber),response:$response[0],checked_at:$checked}' >/tmp/report.json
           cat /tmp/report.json
           content="$(base64 -w0 /tmp/report.json)"
