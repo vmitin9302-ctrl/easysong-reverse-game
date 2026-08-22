@@ -96,10 +96,13 @@ export YC_FOLDER_ID="$FOLDER_ID"
 
 if [[ ! -f "$VARS_FILE" ]]; then
   say "Creating local bootstrap secrets"
-  printf 'Paste the BotFather token for @easygame7_bot (input is hidden): '
-  IFS= read -r -s TELEGRAM_BOT_TOKEN
-  printf '\n'
+  printf 'Paste the BotFather token for @easygame7_bot (it will be visible until you press Enter): '
+  IFS= read -r TELEGRAM_BOT_TOKEN
   [[ -n "$TELEGRAM_BOT_TOKEN" && "$TELEGRAM_BOT_TOKEN" == *:* ]] || fail "Telegram bot token does not look valid. Nothing was applied."
+
+  # Clear the terminal and scrollback after the token has been accepted.
+  printf '\033[3J\033[2J\033[H'
+  say "Telegram token accepted. Continuing securely."
 
   DB_PASSWORD="$(openssl rand -hex 24)"
   SESSION_SECRET="$(openssl rand -hex 32)"
