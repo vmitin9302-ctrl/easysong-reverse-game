@@ -78,6 +78,15 @@ jobs:
         run: |
           echo "web_url=$PUBLIC_WEB_URL" >> "$GITHUB_OUTPUT"
 
+      - name: Report GitHub OIDC identity claims
+        shell: bash
+        run: |
+          oidc_token="$({ curl --fail --silent --show-error \
+            --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL"; } | jq --raw-output '.value')"
+          oidc_payload="$(printf '%s' "$oidc_token" | cut --delimiter=. --fields=2 | tr '_-' '/+' | base64 --decode 2>/dev/null || true)"
+          printf '%s' "$oidc_payload" | jq '{iss, aud, sub, repository, ref, event_name}'
+
       - name: Login to Yandex Container Registry
         uses: yc-actions/yc-cr-login@v3
         with:
