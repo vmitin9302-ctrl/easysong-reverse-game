@@ -1,5 +1,6 @@
 name: Probe Created Telegram Gateway
 
+# One-shot direct public response check.
 on:
   workflow_dispatch:
   push:
