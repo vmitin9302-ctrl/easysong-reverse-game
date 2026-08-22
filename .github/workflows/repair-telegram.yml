@@ -132,6 +132,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
+          status_path="ops/telegram-runs/${GITHUB_SHA}.json"
           cat >/tmp/telegram-status.json <<EOF
           {
             "status": "success",
@@ -147,10 +148,10 @@ jobs:
           }
           EOF
           content="$(base64 -w0 /tmp/telegram-status.json)"
-          current_sha="$(gh api repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json --jq .sha 2>/dev/null || true)"
-          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json" -f message='ops: record Telegram repair success [skip ci]' -f content="$content" -f branch=main)
-          if [ -n "$current_sha" ]; then args+=(-f sha="$current_sha"); fi
-          gh api "${args[@]}" >/dev/null
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${status_path}" \
+            -f message="ops: record Telegram repair success ${GITHUB_SHA} [skip ci]" \
+            -f content="$content" \
+            -f branch=main >/dev/null
 
       - name: Write failure marker
         if: failure()
@@ -165,6 +166,7 @@ jobs:
           OUT_VERIFY: ${{ steps.verify.outcome }}
         run: |
           set -Eeuo pipefail
+          status_path="ops/telegram-runs/${GITHUB_SHA}.json"
           cat >/tmp/telegram-status.json <<EOF
           {
             "status": "failed",
@@ -182,7 +184,7 @@ jobs:
           }
           EOF
           content="$(base64 -w0 /tmp/telegram-status.json)"
-          current_sha="$(gh api repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json --jq .sha 2>/dev/null || true)"
-          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json" -f message='ops: record Telegram repair failure [skip ci]' -f content="$content" -f branch=main)
-          if [ -n "$current_sha" ]; then args+=(-f sha="$current_sha"); fi
-          gh api "${args[@]}" >/dev/null
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${status_path}" \
+            -f message="ops: record Telegram repair failure ${GITHUB_SHA} [skip ci]" \
+            -f content="$content" \
+            -f branch=main >/dev/null
