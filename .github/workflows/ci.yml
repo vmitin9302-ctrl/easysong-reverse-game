@@ -28,3 +28,17 @@ jobs:
       - run: pip install -r apps/api/requirements-dev.txt -r apps/telegram-bot/requirements.txt
       - run: python -m compileall -q apps/api apps/telegram-bot
       - run: PYTHONPATH=apps/api pytest -q apps/api/tests
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.13.2'
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
