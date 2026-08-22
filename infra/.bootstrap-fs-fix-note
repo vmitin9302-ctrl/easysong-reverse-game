@@ -1,0 +1,1 @@
+Cloud Shell bootstrap uses /tmp and archive download to avoid restricted-home chmod behavior.
