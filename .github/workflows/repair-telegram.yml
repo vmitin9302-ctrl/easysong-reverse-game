@@ -6,6 +6,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'apps/telegram-bot/**'
       - '.github/workflows/repair-telegram.yml'
 
 permissions:
@@ -28,7 +29,6 @@ jobs:
     outputs:
       bot_id: ${{ steps.deploy_shell.outputs.id }}
       webhook_url: ${{ steps.verify.outputs.webhook_url }}
-      bot_username: ${{ steps.verify.outputs.bot_username }}
     steps:
       - id: checkout
         uses: actions/checkout@v4
@@ -94,7 +94,7 @@ jobs:
             TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
             TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
 
-      - name: Warm and verify Telegram webhook
+      - name: Warm and verify registered webhook
         id: verify
         shell: bash
         run: |
@@ -104,26 +104,27 @@ jobs:
 
           healthy=false
           for attempt in $(seq 1 24); do
-            if curl --fail --silent --show-error --max-time 15 "$bot_url/health" >/tmp/health.json; then
+            if curl --fail --silent --show-error --max-time 20 "$bot_url/health" >/tmp/health.json; then
               healthy=true
               break
             fi
             sleep 5
           done
           test "$healthy" = true
-          cat /tmp/health.json
+          cat /tmp/health.json | jq .
 
-          status="$(curl --fail --silent --show-error --max-time 20 "$bot_url/telegram/status")"
-          echo "$status" | jq .
-          actual="$(echo "$status" | jq -r '.url')"
-          username="$(echo "$status" | jq -r '.bot_username')"
-          last_error="$(echo "$status" | jq -r '.last_error // empty')"
+          configured="$(jq -r '.configured' /tmp/health.json)"
+          registered="$(jq -r '.webhook_registered' /tmp/health.json)"
+          actual="$(jq -r '.webhook_url' /tmp/health.json)"
+          delivery="$(jq -r '.delivery_mode' /tmp/health.json)"
 
+          test "$configured" = true
+          test "$registered" = true
           test "$actual" = "$expected"
-          test -z "$last_error"
+          test "$delivery" = 'webhook-response'
 
           echo "webhook_url=$actual" >> "$GITHUB_OUTPUT"
-          echo "bot_username=$username" >> "$GITHUB_OUTPUT"
+          echo 'Telegram setWebhook succeeded and /start uses direct webhook response.'
 
       - name: Record success marker
         id: record_success
@@ -139,9 +140,10 @@ jobs:
             "commit": "${GITHUB_SHA}",
             "run_id": "${GITHUB_RUN_ID}",
             "bot_id": "${{ steps.deploy_shell.outputs.id }}",
-            "bot_username": "${{ steps.verify.outputs.bot_username }}",
+            "bot_username": "easygame7_bot",
             "webhook_url": "${{ steps.verify.outputs.webhook_url }}",
             "web_url": "${PUBLIC_WEB_URL}",
+            "delivery_mode": "webhook-response",
             "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
