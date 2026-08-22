@@ -103,8 +103,13 @@ resource "yandex_logging_group" "reverse_game" {
 resource "yandex_storage_bucket" "web" {
   bucket        = var.web_bucket_name
   folder_id     = var.folder_id
-  acl           = "public-read"
   force_destroy = false
+
+  anonymous_access_flags {
+    read        = true
+    list        = true
+    config_read = false
+  }
 
   website {
     index_document = "index.html"
@@ -133,7 +138,7 @@ resource "yandex_mdb_postgresql_cluster_v2" "postgres" {
     }
   }
 
-  maintenance_window {
+  maintenance_window = {
     type = "ANYTIME"
   }
 
