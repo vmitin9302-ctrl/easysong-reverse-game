@@ -1,5 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { prepareSignal, scoreSignals, type ScoreBreakdown } from '@reverse-game/audio-engine';
+import {
+  createGameSession,
+  createShareLink,
+  flushEventQueue,
+  saveGameResult,
+  trackEvent,
+} from './api';
 import {
   audioBufferToMono,
   createAudioContext,
@@ -57,7 +64,7 @@ function Waveform({ active = false }: { active?: boolean }) {
   return (
     <div className={active ? 'waveform waveform--active' : 'waveform'} aria-hidden="true">
       {Array.from({ length: 17 }, (_, index) => (
-        <span key={index} style={{ '--bar': index } as React.CSSProperties} />
+        <span key={index} style={{ '--bar': index } as CSSProperties} />
       ))}
     </div>
   );
@@ -72,6 +79,7 @@ export default function App() {
   const [score, setScore] = useState<ScoreBreakdown | null>(null);
   const [gameError, setGameError] = useState<GameError | null>(null);
   const [telegram] = useState(() => initTelegram());
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -84,17 +92,49 @@ export default function App() {
   const originalRef = useRef<AudioBuffer | null>(null);
   const reversedOriginalRef = useRef<AudioBuffer | null>(null);
   const reconstructedRef = useRef<AudioBuffer | null>(null);
+  const bootstrappedRef = useRef(false);
 
-  const source = telegram.isTelegram ? 'telegram' : 'web';
+  const referralToken = useMemo(() => new URLSearchParams(window.location.search).get('ref') || undefined, []);
+  const source = referralToken ? 'share' : telegram.isTelegram ? 'telegram' : 'web';
+
   const easysongHref = useMemo(() => {
     const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '');
     if (apiBase) {
       const params = new URLSearchParams({ source, campaign: 'reverse_game' });
-      if (telegram.startParam) params.set('start_param', telegram.startParam);
+      if (sessionId) params.set('sid', sessionId);
       return `${apiBase}/go/easysong?${params.toString()}`;
     }
     return (import.meta.env.VITE_EASYSONG_URL as string | undefined) || EASYSONG_FALLBACK;
-  }, [source, telegram.startParam]);
+  }, [sessionId, source]);
+
+  useEffect(() => {
+    if (bootstrappedRef.current) return;
+    bootstrappedRef.current = true;
+
+    void (async () => {
+      await flushEventQueue();
+      try {
+        const id = await createGameSession({
+          source,
+          platform: telegram.isTelegram ? 'telegram_mini_app' : 'web',
+          campaign: 'reverse_game',
+          referralToken,
+        });
+        setSessionId(id);
+        await trackEvent(id, 'game_opened', {
+          source,
+          telegram: telegram.isTelegram,
+          referral: Boolean(referralToken),
+        });
+      } catch {
+        // The game itself remains fully playable without the API.
+      }
+    })();
+
+    const onOnline = () => void flushEventQueue();
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [referralToken, source, telegram.isTelegram]);
 
   useEffect(() => {
     return () => {
@@ -105,6 +145,10 @@ export default function App() {
       void audioContextRef.current?.close();
     };
   }, []);
+
+  function track(eventName: string, properties: Record<string, unknown> = {}) {
+    void trackEvent(sessionId, eventName, properties);
+  }
 
   function audioContext(): AudioContext {
     if (!audioContextRef.current) audioContextRef.current = createAudioContext();
@@ -119,6 +163,7 @@ export default function App() {
   }
 
   async function requestMicrophone() {
+    track('microphone_prompt_shown');
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       fail({
         title: 'Этот браузер не поддерживает запись',
@@ -141,7 +186,9 @@ export default function App() {
       streamRef.current = stream;
       setGameError(null);
       setStage('record-original');
+      track('microphone_granted');
     } catch {
+      track('microphone_denied');
       fail({
         title: 'Не получилось включить микрофон',
         message: 'Разреши доступ к микрофону в настройках браузера и попробуй снова.',
@@ -178,9 +225,11 @@ export default function App() {
         reversedOriginalRef.current = reverseAudioBuffer(context, decoded);
         setListenCount(0);
         setStage('listen-reversed');
+        track('original_recording_completed', { duration_ms: Math.round(decoded.duration * 1000) });
         return;
       }
 
+      track('attempt_recording_completed', { duration_ms: Math.round(decoded.duration * 1000) });
       setStage('processing');
       const reconstructed = reverseAudioBuffer(context, decoded);
       reconstructedRef.current = reconstructed;
@@ -207,6 +256,13 @@ export default function App() {
 
       setScore(result);
       setStage('result');
+      track('score_generated', { score: result.score });
+      void saveGameResult(
+        sessionId,
+        result,
+        original.duration * 1000,
+        decoded.duration * 1000,
+      ).catch(() => undefined);
     } catch {
       fail({
         title: 'Что-то пошло не так',
@@ -253,6 +309,7 @@ export default function App() {
       setElapsedMs(0);
       setIsRecording(true);
       recorder.start(100);
+      track(kind === 'original' ? 'original_recording_started' : 'attempt_recording_started');
 
       intervalRef.current = window.setInterval(() => {
         setElapsedMs(performance.now() - recordingStartedAtRef.current);
@@ -276,7 +333,10 @@ export default function App() {
     try {
       setIsPlaying(true);
       await playAudioBuffer(audioContext(), buffer);
-      if (countListen) setListenCount((value) => Math.min(3, value + 1));
+      if (countListen) {
+        setListenCount((value) => Math.min(3, value + 1));
+        track('reverse_audio_played', { play_number: listenCount + 1 });
+      }
     } finally {
       setIsPlaying(false);
     }
@@ -294,6 +354,7 @@ export default function App() {
     setElapsedMs(0);
     setIsRecording(false);
     setStage(streamRef.current ? 'record-original' : 'permission');
+    track('retry_clicked');
   }
 
   function retryAfterError() {
@@ -308,8 +369,23 @@ export default function App() {
 
   async function shareResult() {
     const value = score?.score ?? 0;
+    track('share_clicked', { score: value });
+
+    let shareUrl = window.location.href.split('?')[0];
+    try {
+      const token = await createShareLink(sessionId, value);
+      if (token) {
+        const url = new URL(window.location.origin + window.location.pathname);
+        url.searchParams.set('ref', token);
+        shareUrl = url.toString();
+        track('share_created', { token });
+      }
+    } catch {
+      // A generic share link still works when the backend is unavailable.
+    }
+
     const text = `Я набрал ${value}% в «Скажи наоборот» 😈 Сможешь лучше?`;
-    const shareData = { title: 'Скажи наоборот', text, url: window.location.href };
+    const shareData = { title: 'Скажи наоборот', text, url: shareUrl };
 
     if (navigator.share) {
       try {
@@ -320,7 +396,7 @@ export default function App() {
       }
     }
 
-    await navigator.clipboard?.writeText(`${text} ${window.location.href}`);
+    if (navigator.clipboard) await navigator.clipboard.writeText(`${text} ${shareUrl}`);
     window.alert('Ссылка на игру скопирована');
   }
 
@@ -341,10 +417,17 @@ export default function App() {
         {stage === 'ready' && (
           <div className="screen screen--center">
             <div className="hero-icon" aria-hidden="true">↶</div>
+            {referralToken && <div className="challenge-badge">😈 Тебе бросили вызов</div>}
             <p className="eyebrow">ГОЛОСОВОЙ ЧЕЛЛЕНДЖ</p>
             <h1>Сможешь говорить<br />задом наперёд?</h1>
             <p className="lead">Запиши фразу, послушай её наоборот и попробуй повторить.</p>
-            <button className="button button--primary" onClick={() => setStage('permission')}>
+            <button
+              className="button button--primary"
+              onClick={() => {
+                track('game_started');
+                setStage('permission');
+              }}
+            >
               🎙 Начать игру
             </button>
             <p className="privacy-note">Без регистрации · аудио остаётся на устройстве</p>
@@ -463,7 +546,9 @@ export default function App() {
                 <h3>С голосом разобрались</h3>
                 <p>А теперь преврати свою идею в настоящую песню с Сонграйтером.</p>
               </div>
-              <a className="button button--white" href={easysongHref}>Создать свою песню →</a>
+              <a className="button button--white" href={easysongHref} onClick={() => track('easysong_clicked')}>
+                Создать свою песню →
+              </a>
             </div>
 
             <details className="score-details">
