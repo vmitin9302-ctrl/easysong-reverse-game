@@ -1,0 +1,19 @@
+{
+  "http_code": 403,
+  "operation": {
+    "code": 7,
+    "message": "Permission denied",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+        "locale": "en",
+        "message": "Permission denied"
+      },
+      {
+        "@type": "type.googleapis.com/google.rpc.RequestInfo",
+        "requestId": "2c598e32-fbfa-41ab-8bec-a9fbbba561dc"
+      }
+    ]
+  },
+  "checked_at": "2026-08-22T20:12:40Z"
+}
