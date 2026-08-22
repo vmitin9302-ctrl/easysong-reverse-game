@@ -1,8 +1,9 @@
 # Copy this file to terraform.tfvars locally. terraform.tfvars is gitignored.
 # Never commit real secret values.
 
-cloud_id       = "<your-yandex-cloud-id>"
-folder_id      = "<dedicated-reverse-game-folder-id>"
+# Dedicated Yandex Cloud project confirmed from console.yandex.cloud.
+cloud_id        = "b1gdd8mvsmaacivqjl15"
+folder_id       = "b1gtc579k8imd81bb227"
 web_bucket_name = "<globally-unique-reverse-game-web-bucket>"
 
 # Keep these only in a secure local secret manager / protected CI input while bootstrapping.
