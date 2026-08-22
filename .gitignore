@@ -12,3 +12,12 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# Terraform local state and machine-specific values
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.auto.tfvars
+crash.log
+crash.*.log

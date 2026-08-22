@@ -1,0 +1,12 @@
+# Copy this file to terraform.tfvars locally. terraform.tfvars is gitignored.
+# Never commit real secret values.
+
+cloud_id       = "<your-yandex-cloud-id>"
+folder_id      = "<dedicated-reverse-game-folder-id>"
+web_bucket_name = "<globally-unique-reverse-game-web-bucket>"
+
+# Keep these only in a secure local secret manager / protected CI input while bootstrapping.
+db_password             = "<strong-random-password>"
+session_secret          = "<strong-random-secret>"
+telegram_bot_token      = "<new-standalone-bot-token>"
+telegram_webhook_secret = "<strong-random-webhook-secret>"

@@ -1,0 +1,213 @@
+name: Deploy to Yandex Cloud
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'tsconfig.base.json'
+      - '.github/workflows/deploy-yandex.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: reverse-game-production
+  cancel-in-progress: false
+
+env:
+  API_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID }}/reverse-game-api:${{ github.sha }}
+  BOT_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID }}/reverse-game-bot:${{ github.sha }}
+
+jobs:
+  configuration:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        shell: bash
+        run: |
+          ready=true
+          for value in \
+            '${{ vars.YC_SA_ID }}' \
+            '${{ vars.YC_FOLDER_ID }}' \
+            '${{ vars.YC_REGISTRY_ID }}' \
+            '${{ vars.YC_RUNTIME_SA_ID }}' \
+            '${{ vars.YC_NETWORK_ID }}' \
+            '${{ vars.YC_LOCKBOX_SECRET_ID }}' \
+            '${{ vars.YC_LOG_GROUP_ID }}' \
+            '${{ vars.YC_WEB_BUCKET }}'; do
+            if [ -z "$value" ]; then ready=false; fi
+          done
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          if [ "$ready" != "true" ]; then
+            echo 'Yandex Cloud deployment is not configured yet; CI remains unaffected.'
+          fi
+
+  containers:
+    needs: configuration
+    if: needs.configuration.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      api_id: ${{ steps.deploy-api.outputs.id }}
+      bot_id: ${{ steps.deploy-bot.outputs.id }}
+      web_url: ${{ steps.urls.outputs.web_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve public web URL
+        id: urls
+        shell: bash
+        run: |
+          web_url='${{ vars.PUBLIC_WEB_URL }}'
+          if [ -z "$web_url" ]; then
+            web_url='https://${{ vars.YC_WEB_BUCKET }}.website.yandexcloud.net'
+          fi
+          echo "web_url=$web_url" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Yandex Container Registry
+        uses: yc-actions/yc-cr-login@v3
+        with:
+          yc-sa-id: ${{ vars.YC_SA_ID }}
+
+      - name: Build API image
+        run: docker build -f apps/api/Dockerfile -t "$API_IMAGE" .
+
+      - name: Build Telegram bot image
+        run: docker build -f apps/telegram-bot/Dockerfile -t "$BOT_IMAGE" .
+
+      - name: Push API image
+        run: docker push "$API_IMAGE"
+
+      - name: Push Telegram bot image
+        run: docker push "$BOT_IMAGE"
+
+      - name: Deploy API Serverless Container
+        id: deploy-api
+        uses: yc-actions/yc-sls-container-deploy@v5
+        with:
+          yc-sa-id: ${{ vars.YC_SA_ID }}
+          folder-id: ${{ vars.YC_FOLDER_ID }}
+          container-name: reverse-game-api
+          public: true
+          revision-service-account-id: ${{ vars.YC_RUNTIME_SA_ID }}
+          revision-cores: 1
+          revision-memory: 512Mb
+          revision-core-fraction: 100
+          revision-concurrency: 8
+          revision-image-url: ${{ env.API_IMAGE }}
+          revision-execution-timeout: 15
+          revision-network-id: ${{ vars.YC_NETWORK_ID }}
+          revision-log-options-log-group-id: ${{ vars.YC_LOG_GROUP_ID }}
+          revision-log-options-min-level: info
+          revision-env: |
+            ALLOWED_ORIGINS=${{ steps.urls.outputs.web_url }}
+            EASYSONG_URL=https://easysong.ru/webapp/auth?next=%2Fwebapp
+          revision-secrets: |
+            DATABASE_URL=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/DATABASE_URL
+            SESSION_SECRET=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/SESSION_SECRET
+            TELEGRAM_BOT_TOKEN=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+
+      - name: Deploy Telegram bot container shell
+        id: deploy-bot
+        uses: yc-actions/yc-sls-container-deploy@v5
+        with:
+          yc-sa-id: ${{ vars.YC_SA_ID }}
+          folder-id: ${{ vars.YC_FOLDER_ID }}
+          container-name: reverse-game-bot
+          public: true
+          revision-service-account-id: ${{ vars.YC_RUNTIME_SA_ID }}
+          revision-cores: 1
+          revision-memory: 256Mb
+          revision-core-fraction: 100
+          revision-concurrency: 8
+          revision-image-url: ${{ env.BOT_IMAGE }}
+          revision-execution-timeout: 15
+          revision-log-options-log-group-id: ${{ vars.YC_LOG_GROUP_ID }}
+          revision-log-options-min-level: info
+          revision-env: |
+            TELEGRAM_WEBAPP_URL=${{ steps.urls.outputs.web_url }}
+          revision-secrets: |
+            TELEGRAM_BOT_TOKEN=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+            TELEGRAM_WEBHOOK_SECRET=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
+
+  web:
+    needs: [configuration, containers]
+    if: needs.configuration.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+
+      - name: Resolve public API URL and build production web app
+        shell: bash
+        run: |
+          api_url='${{ vars.PUBLIC_API_URL }}'
+          if [ -z "$api_url" ]; then
+            api_url='https://${{ needs.containers.outputs.api_id }}.containers.yandexcloud.net'
+          fi
+          VITE_API_BASE_URL="$api_url" \
+          VITE_EASYSONG_URL='https://easysong.ru/webapp/auth?next=%2Fwebapp' \
+          npm run build
+
+      - name: Upload web app to Yandex Object Storage
+        uses: yc-actions/yc-obj-storage-upload@v4
+        with:
+          yc-sa-id: ${{ vars.YC_SA_ID }}
+          bucket: ${{ vars.YC_WEB_BUCKET }}
+          root: ./apps/web/dist
+          clear: true
+          fail-on-error: true
+          cache-control: |
+            assets/**: public, max-age=31536000, immutable
+            *.html: no-cache
+            *: no-cache
+
+  configure-telegram:
+    needs: [configuration, containers, web]
+    if: needs.configuration.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Activate Telegram webhook after web is online
+        id: configure-bot
+        uses: yc-actions/yc-sls-container-deploy@v5
+        with:
+          yc-sa-id: ${{ vars.YC_SA_ID }}
+          folder-id: ${{ vars.YC_FOLDER_ID }}
+          container-name: reverse-game-bot
+          public: true
+          revision-service-account-id: ${{ vars.YC_RUNTIME_SA_ID }}
+          revision-cores: 1
+          revision-memory: 256Mb
+          revision-core-fraction: 100
+          revision-concurrency: 8
+          revision-image-url: ${{ env.BOT_IMAGE }}
+          revision-execution-timeout: 15
+          revision-log-options-log-group-id: ${{ vars.YC_LOG_GROUP_ID }}
+          revision-log-options-min-level: info
+          revision-env: |
+            TELEGRAM_WEBAPP_URL=${{ needs.containers.outputs.web_url }}
+            TELEGRAM_WEBHOOK_URL=https://${{ needs.containers.outputs.bot_id }}.containers.yandexcloud.net/telegram/webhook
+          revision-secrets: |
+            TELEGRAM_BOT_TOKEN=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+            TELEGRAM_WEBHOOK_SECRET=${{ vars.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
+
+      - name: Deployment summary
+        shell: bash
+        run: |
+          api_url='${{ vars.PUBLIC_API_URL }}'
+          if [ -z "$api_url" ]; then
+            api_url='https://${{ needs.containers.outputs.api_id }}.containers.yandexcloud.net'
+          fi
+          echo "### Reverse Game production" >> "$GITHUB_STEP_SUMMARY"
+          echo "Web: ${{ needs.containers.outputs.web_url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "API: $api_url" >> "$GITHUB_STEP_SUMMARY"
+          echo "Telegram webhook: https://${{ needs.containers.outputs.bot_id }}.containers.yandexcloud.net/telegram/webhook" >> "$GITHUB_STEP_SUMMARY"

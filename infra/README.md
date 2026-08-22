@@ -1,48 +1,77 @@
-# Yandex Cloud deployment plan
+# Yandex Cloud — Reverse Game
 
-Production разворачивается в отдельной папке Yandex Cloud, не связанной IAM-правами с другими проектами.
+Production разворачивается только в отдельной папке Yandex Cloud. У service accounts игры нет причин иметь права на BOTYARA, EasySong или любые другие проекты.
 
-## Целевые ресурсы
+## Что создаёт Terraform
 
-- `reverse-game-web` — Object Storage bucket для `apps/web/dist`.
-- `reverse-game-cdn` — CDN для `game.easysong.ru`.
-- `reverse-game-api` — Serverless Container из `apps/api/Dockerfile`.
-- `reverse-game-bot` — отдельный Serverless Container из `apps/telegram-bot/Dockerfile`.
-- `reverse-game-postgres` — отдельный Managed PostgreSQL.
-- `reverse-game-registry` — Container Registry.
-- `reverse-game-lockbox` — Lockbox secrets для DB/Telegram/session secret.
-- `reverse-game-logs` — отдельная log group.
-- Certificate Manager — TLS для `game.easysong.ru` и `api.game.easysong.ru`.
+`infra/terraform` описывает собственные ресурсы игры:
 
-## Домены
+- приватную VPC/subnet;
+- `reverse-game-deploy` — identity для GitHub Actions;
+- `reverse-game-runtime` — runtime identity контейнеров;
+- GitHub OIDC Workload Identity Federation без долгоживущего JSON-ключа;
+- Container Registry;
+- Cloud Logging group;
+- public Object Storage bucket со SPA hosting;
+- отдельный Managed PostgreSQL 17 без публичного IP;
+- отдельную БД и пользователя;
+- Lockbox secret с `DATABASE_URL`, `SESSION_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`.
 
-- `game.easysong.ru` → статический frontend через CDN.
-- `api.game.easysong.ru` → API container.
-- Telegram webhook указывает на отдельный публичный HTTPS endpoint bot container.
+## Первый URL без собственного домена
+
+Кастомный DNS не блокирует первый запуск.
+
+Если GitHub variable `PUBLIC_WEB_URL` не задана, deploy workflow использует:
+
+`https://<YC_WEB_BUCKET>.website.yandexcloud.net`
+
+Если `PUBLIC_API_URL` не задана, frontend собирается с прямым HTTPS URL публичного Serverless Container:
+
+`https://<API_CONTAINER_ID>.containers.yandexcloud.net`
+
+После проверки MVP можно без изменения кода подключить `game.easysong.ru`, CDN и Certificate Manager и задать `PUBLIC_WEB_URL` / `PUBLIC_API_URL`.
 
 ## Секреты
 
-В GitHub и Docker images запрещено хранить:
+Никогда не коммитить:
 
-- `TELEGRAM_BOT_TOKEN`;
-- `TELEGRAM_WEBHOOK_SECRET`;
-- `DATABASE_URL` / пароль БД;
-- `SESSION_SECRET`;
+- Telegram bot token;
+- Telegram webhook secret;
+- PostgreSQL password;
+- session secret;
+- `terraform.tfvars`;
+- Terraform state;
 - статические ключи Yandex Cloud.
 
-Production-значения передаются контейнерам из Lockbox.
+Lockbox version создаётся через `yandex_lockbox_secret_version_hashed`, поэтому payload Lockbox в state хранится в hash-представлении. Но PostgreSQL credentials и другая чувствительная инфраструктурная информация всё равно могут присутствовать в Terraform state через другие resources. Поэтому весь state нужно считать секретом и хранить только в защищённом backend/локальном окружении, а не в Git.
 
-## Развёртывание
+## Bootstrap
 
-1. Создать отдельную folder `reverse-game-prod`.
-2. Создать отдельный service account с минимальными ролями только в этой folder.
-3. Создать PostgreSQL и приватную сеть для backend.
-4. Создать Container Registry, собрать и загрузить API и Telegram images.
-5. Создать Serverless Containers и подключить Lockbox secrets.
-6. Собрать web (`npm run build`) и загрузить `apps/web/dist` в Object Storage.
-7. Подключить CDN и сертификаты.
-8. Настроить DNS.
-9. Установить `VITE_API_BASE_URL=https://api.game.easysong.ru` при production build.
-10. Установить Telegram Mini App URL `https://game.easysong.ru` и webhook.
+1. В Yandex Cloud должна существовать отдельная folder для игры и активный billing account.
+2. Скопировать `infra/terraform/terraform.tfvars.example` в локальный `terraform.tfvars` и заполнить Cloud ID, Folder ID, уникальное имя bucket и секретные значения.
+3. Выполнить `terraform init`, `terraform plan`, затем `terraform apply` под учётной записью, имеющей права создавать ресурсы и IAM bindings в этой отдельной folder.
+4. Взять значения из `terraform output` и добавить их как GitHub repository variables: `YC_SA_ID`, `YC_FOLDER_ID`, `YC_REGISTRY_ID`, `YC_RUNTIME_SA_ID`, `YC_NETWORK_ID`, `YC_LOCKBOX_SECRET_ID`, `YC_LOG_GROUP_ID`, `YC_WEB_BUCKET`.
+5. После этого `.github/workflows/deploy-yandex.yml` делает остальные deploy-шаги автоматически через GitHub OIDC: собирает images, публикует containers, собирает web с реальным API URL, загружает сайт и второй ревизией бота автоматически устанавливает Telegram webhook на его собственный Serverless Container URL.
 
-До появления production Cloud ID / Folder ID / DNS-доступа инфраструктурный код не должен содержать фиктивные идентификаторы.
+Никакой Yandex authorized-key JSON в GitHub Secrets не требуется.
+
+## Telegram
+
+Нужен новый самостоятельный bot token именно для Reverse Game. Он помещается в Terraform input/Lockbox, но не в Git.
+
+После deploy бот получает:
+
+- `TELEGRAM_WEBAPP_URL` — HTTPS URL игры;
+- `TELEGRAM_WEBHOOK_URL` — автоматически вычисленный `https://<bot_container_id>.containers.yandexcloud.net/telegram/webhook`;
+- `TELEGRAM_WEBHOOK_SECRET` — из Lockbox.
+
+## Custom domain — после MVP
+
+Финальная схема может быть:
+
+- `game.easysong.ru` → Object Storage/CDN;
+- `api.game.easysong.ru` → API/API Gateway;
+- Certificate Manager → TLS;
+- DNS record → соответствующий Yandex Cloud endpoint.
+
+Это отдельный инфраструктурный слой и не требует переделки frontend/audio engine/backend.
