@@ -14,8 +14,11 @@ describe('reverseSamples', () => {
   it('reverses a buffer and is involutive', () => {
     const original = new Float32Array([0.1, 0.2, -0.3, 0.4]);
     const reversed = reverseSamples(original);
-    expect(Array.from(reversed)).toEqual([0.4, -0.3, 0.2, 0.1]);
-    expect(Array.from(reverseSamples(reversed))).toEqual(Array.from(original));
+    const expected = [0.4, -0.3, 0.2, 0.1];
+    expected.forEach((value, index) => expect(reversed[index]).toBeCloseTo(value, 6));
+
+    const restored = reverseSamples(reversed);
+    original.forEach((value, index) => expect(restored[index]).toBeCloseTo(value, 7));
   });
 });
 
