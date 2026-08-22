@@ -43,7 +43,7 @@ Production разворачивается только в отдельной п�
 - Terraform state;
 - статические ключи Yandex Cloud.
 
-Lockbox version создаётся через `yandex_lockbox_secret_version_hashed`, поэтому payload values в resource state представлены hash-значениями. При этом сам Terraform state всё равно считается чувствительным и должен храниться защищённо.
+Lockbox version создаётся через `yandex_lockbox_secret_version_hashed`, поэтому payload Lockbox в state хранится в hash-представлении. Но PostgreSQL credentials и другая чувствительная инфраструктурная информация всё равно могут присутствовать в Terraform state через другие resources. Поэтому весь state нужно считать секретом и хранить только в защищённом backend/локальном окружении, а не в Git.
 
 ## Bootstrap
 
