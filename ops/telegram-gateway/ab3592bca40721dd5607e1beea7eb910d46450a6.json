@@ -1,0 +1,14 @@
+{
+  "status": "failed",
+  "commit": "ab3592bca40721dd5607e1beea7eb910d46450a6",
+  "run_id": "32595110917",
+  "steps": {
+    "function": "success",
+    "spec": "success",
+    "gateway": "failure",
+    "creds": "skipped",
+    "probe": "skipped",
+    "switch": "skipped"
+  },
+  "checked_at": "2026-08-22T19:55:02Z"
+}
