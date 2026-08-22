@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
@@ -19,6 +21,29 @@ class Settings(BaseSettings):
 settings = Settings()
 dp = Dispatcher()
 bot: Bot | None = None
+webhook_status = 'not_configured'
+logger = logging.getLogger(__name__)
+
+
+async def configure_webhook() -> None:
+    global webhook_status
+    if bot is None or not settings.telegram_webhook_url:
+        return
+
+    webhook_status = 'pending'
+    try:
+        await asyncio.wait_for(
+            bot.set_webhook(
+                settings.telegram_webhook_url,
+                secret_token=settings.telegram_webhook_secret,
+                allowed_updates=dp.resolve_used_update_types(),
+            ),
+            timeout=15,
+        )
+        webhook_status = 'ok'
+    except Exception:
+        webhook_status = 'error'
+        logger.exception('Telegram webhook configuration failed')
 
 
 @dp.message(CommandStart())
@@ -44,15 +69,14 @@ async def start(message: Message) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global bot
+    webhook_task: asyncio.Task[None] | None = None
     if settings.telegram_bot_token:
         bot = Bot(settings.telegram_bot_token)
         if settings.telegram_webhook_url:
-            await bot.set_webhook(
-                settings.telegram_webhook_url,
-                secret_token=settings.telegram_webhook_secret,
-                allowed_updates=dp.resolve_used_update_types(),
-            )
+            webhook_task = asyncio.create_task(configure_webhook())
     yield
+    if webhook_task is not None and not webhook_task.done():
+        webhook_task.cancel()
     if bot is not None:
         await bot.session.close()
         bot = None
@@ -63,7 +87,11 @@ app = FastAPI(title='EasySong Reverse Game Telegram Bot', lifespan=lifespan)
 
 @app.get('/health')
 async def health() -> dict:
-    return {'status': 'ok', 'configured': bool(settings.telegram_bot_token)}
+    return {
+        'status': 'ok',
+        'configured': bool(settings.telegram_bot_token),
+        'webhook': webhook_status,
+    }
 
 
 @app.post('/telegram/webhook')
