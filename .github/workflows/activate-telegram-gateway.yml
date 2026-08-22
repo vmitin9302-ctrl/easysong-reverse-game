@@ -1,6 +1,6 @@
 name: Activate Existing Telegram Gateway
 
-# Final activation after direct Create succeeded without ApiGatewayService.List permission.
+# Uses the deterministic public service domain; no ApiGatewayService.Get/List permission needed.
 on:
   workflow_dispatch:
   push:
@@ -20,6 +20,7 @@ env:
   YC_SA_ID: aje91e1lh5ku368rkp2i
   YC_LOCKBOX_SECRET_ID: e6qa23qqickfuqekoojj
   GATEWAY_ID: d5djlfnvtqd36klgs2dd
+  GATEWAY_URL: https://d5djlfnvtqd36klgs2dd.apigw.yandexcloud.net/telegram/webhook
   WEB_URL: https://easygame7-d81bb227-42b6a9.website.yandexcloud.net
 
 jobs:
@@ -34,7 +35,7 @@ jobs:
         with:
           yc-sa-id: ${{ env.YC_SA_ID }}
 
-      - name: Resolve Gateway and Telegram credentials
+      - name: Load Telegram credentials from Lockbox
         id: prepare
         shell: bash
         env:
@@ -42,20 +43,6 @@ jobs:
         run: |
           set -Eeuo pipefail
           echo "::add-mask::$IAM_TOKEN"
-          gateway=''
-          for attempt in $(seq 1 30); do
-            code="$(curl --silent --show-error --output /tmp/gateway.json --write-out '%{http_code}' --max-time 30 -H "Authorization: Bearer $IAM_TOKEN" "https://serverless-apigateway.api.cloud.yandex.net/apigateways/v1/apigateways/${GATEWAY_ID}" || true)"
-            if [ "$code" = 200 ]; then gateway="$(cat /tmp/gateway.json)"; break; fi
-            echo "Gateway GET $attempt/30: HTTP $code"; cat /tmp/gateway.json 2>/dev/null || true; sleep 3
-          done
-          test -n "$gateway"
-          echo "$gateway" | jq .
-          domain="$(printf '%s' "$gateway" | jq -r '.domain')"
-          test -n "$domain"; test "$domain" != null
-          case "$domain" in http://*|https://*) base="$domain";; *) base="https://$domain";; esac
-          url="${base%/}/telegram/webhook"
-          echo "gateway_url=$url" >> "$GITHUB_OUTPUT"
-
           lockbox="$(curl --fail --silent --show-error --max-time 60 -H "Authorization: Bearer $IAM_TOKEN" "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/${YC_LOCKBOX_SECRET_ID}/payload")"
           BOT_TOKEN="$(printf '%s' "$lockbox" | jq -r '.entries[] | select(.key=="TELEGRAM_BOT_TOKEN") | .textValue')"
           WEBHOOK_SECRET="$(printf '%s' "$lockbox" | jq -r '.entries[] | select(.key=="TELEGRAM_WEBHOOK_SECRET") | .textValue')"
@@ -66,8 +53,6 @@ jobs:
       - name: Probe Gateway with synthetic /start
         id: probe
         shell: bash
-        env:
-          GATEWAY_URL: ${{ steps.prepare.outputs.gateway_url }}
         run: |
           set -Eeuo pipefail
           secret="$(cat /tmp/webhook-secret)"
@@ -84,15 +69,18 @@ jobs:
       - name: Recover pending /start and activate Gateway webhook
         id: activate
         shell: bash
-        env:
-          GATEWAY_URL: ${{ steps.prepare.outputs.gateway_url }}
         run: |
           set -Eeuo pipefail
           token="$(cat /tmp/bot-token)"; secret="$(cat /tmp/webhook-secret)"
           before="$(curl --fail --silent --show-error --max-time 60 "https://api.telegram.org/bot${token}/getWebhookInfo")"
           before_url="$(printf '%s' "$before" | jq -r '.result.url')"; before_pending="$(printf '%s' "$before" | jq -r '.result.pending_update_count')"; before_error="$(printf '%s' "$before" | jq -r '.result.last_error_message // empty')"
           echo "Before activation: url=$before_url pending=$before_pending error=$before_error"
-          if [ -n "$before_url" ]; then curl --fail --silent --show-error --max-time 60 -X POST "https://api.telegram.org/bot${token}/deleteWebhook" --data-urlencode 'drop_pending_updates=false' | jq -e '.ok==true and .result==true' >/dev/null; sleep 2; fi
+
+          if [ -n "$before_url" ]; then
+            curl --fail --silent --show-error --max-time 60 -X POST "https://api.telegram.org/bot${token}/deleteWebhook" --data-urlencode 'drop_pending_updates=false' | jq -e '.ok==true and .result==true' >/dev/null
+            sleep 2
+          fi
+
           updates="$(curl --fail --silent --show-error --max-time 60 "https://api.telegram.org/bot${token}/getUpdates?offset=-100&limit=100&timeout=0&allowed_updates=%5B%22message%22%5D")"
           printf '%s' "$updates" >/tmp/updates.json; jq -e '.ok==true' /tmp/updates.json >/dev/null
           max_id="$(jq -r '[.result[].update_id] | if length==0 then empty else max end' /tmp/updates.json)"
@@ -105,8 +93,10 @@ jobs:
             recovered=$((recovered+1))
           done </tmp/chats
           if [ -n "$max_id" ]; then next=$((max_id+1)); curl --fail --silent --show-error --max-time 60 "https://api.telegram.org/bot${token}/getUpdates?offset=${next}&limit=1&timeout=0&allowed_updates=%5B%22message%22%5D" | jq -e '.ok==true' >/dev/null; fi
+
           registration="$(curl --fail --silent --show-error --max-time 60 -X POST "https://api.telegram.org/bot${token}/setWebhook" --data-urlencode "url=${GATEWAY_URL}" --data-urlencode "secret_token=${secret}" --data-urlencode 'allowed_updates=["message"]' --data-urlencode 'drop_pending_updates=true')"
-          printf '%s' "$registration" | jq -e '.ok==true and .result==true' >/dev/null; sleep 3
+          printf '%s' "$registration" | jq -e '.ok==true and .result==true' >/dev/null
+          sleep 3
           final="$(curl --fail --silent --show-error --max-time 60 "https://api.telegram.org/bot${token}/getWebhookInfo")"
           actual="$(printf '%s' "$final" | jq -r '.result.url')"; pending="$(printf '%s' "$final" | jq -r '.result.pending_update_count')"; last_error="$(printf '%s' "$final" | jq -r '.result.last_error_message // empty')"
           test "$actual" = "$GATEWAY_URL"; test "$pending" = 0
@@ -120,10 +110,12 @@ jobs:
           PREPARE: ${{ steps.prepare.outcome }}
           PROBE: ${{ steps.probe.outcome }}
           ACTIVATE: ${{ steps.activate.outcome }}
-          GATEWAY_URL: ${{ steps.prepare.outputs.gateway_url }}
         run: |
           set -Eeuo pipefail
           status=failed; [ "$ACTIVATE" = success ] && status=success
           jq -n --arg status "$status" --arg commit "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" --arg prepare "$PREPARE" --arg probe "$PROBE" --arg activate "$ACTIVATE" --arg gateway_id "$GATEWAY_ID" --arg gateway_url "$GATEWAY_URL" --arg before '${{ steps.activate.outputs.before_pending }}' --arg recovered '${{ steps.activate.outputs.recovered }}' --arg pending '${{ steps.activate.outputs.pending }}' --arg last_error '${{ steps.activate.outputs.last_error }}' --arg checked "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{status:$status,commit:$commit,run_id:$run,steps:{prepare:$prepare,probe:$probe,activate:$activate},gateway_id:$gateway_id,gateway_url:$gateway_url,before_pending_updates:(if $before=="" then null else ($before|tonumber) end),recovered_start_chats:(if $recovered=="" then null else ($recovered|tonumber) end),pending_updates:(if $pending=="" then null else ($pending|tonumber) end),last_error:(if $last_error=="" then null else $last_error end),checked_at:$checked}' >/tmp/result.json
           content="$(base64 -w0 /tmp/result.json)"; path="ops/telegram-gateway-active/${GITHUB_SHA}.json"
-          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f message="ops: record Telegram Gateway activation ${GITHUB_SHA} [skip ci]" -f content="$content" -f branch=main >/dev/null
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f message="ops: record Telegram Gateway activation ${GITHUB_SHA} [skip ci]" -f content="$content" -f branch=main)
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
