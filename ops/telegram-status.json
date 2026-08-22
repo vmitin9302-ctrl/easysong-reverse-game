@@ -1,14 +1,1 @@
-{
-  "status": "failed",
-  "commit": "24b3660c7b3758be8925d80b30514fac50e7eeff",
-  "run_id": "32592426604",
-  "steps": {
-    "checkout": "success",
-    "login": "success",
-    "build_push": "success",
-    "deploy_shell": "success",
-    "deploy_final": "success",
-    "verify": "failure"
-  },
-  "checked_at": "2026-08-22T19:02:28Z"
-}
+{"status":"failed","commit":"8cafad982af1dfd2afc8b734a5f616349c9a0db0","checked_at":"2026-08-22T19:05:32Z"}
