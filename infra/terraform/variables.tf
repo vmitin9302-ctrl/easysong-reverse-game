@@ -21,8 +21,13 @@ variable "subnet_cidr" {
 }
 
 variable "web_bucket_name" {
-  description = "Globally unique Object Storage bucket name for the built web app."
+  description = "Globally unique Object Storage bucket name for the built web app. Keep it dot-free so the default Yandex HTTPS hostname works without a custom certificate."
   type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$", var.web_bucket_name))
+    error_message = "web_bucket_name must be 3-63 lowercase letters/numbers/hyphens with no dots, and must start/end with a letter or number."
+  }
 }
 
 variable "github_owner" {
@@ -50,7 +55,7 @@ variable "db_user" {
 }
 
 variable "db_password" {
-  description = "Strong PostgreSQL password. Keep it outside Git; Terraform stores only the configured resource state in your chosen state backend."
+  description = "Strong PostgreSQL password. Keep it outside Git and treat the Terraform state backend as sensitive."
   type        = string
   sensitive   = true
 }
