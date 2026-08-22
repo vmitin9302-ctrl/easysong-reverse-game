@@ -35,11 +35,7 @@ CURRENT_FOLDER="$(yc config get folder-id 2>/dev/null || true)"
 mkdir -p "$PERSIST_ROOT"
 
 install_terraform() {
-  if command -v terraform >/dev/null 2>&1; then
-    return
-  fi
-
-  say "Terraform is not installed; installing a temporary copy ${TF_VERSION}"
+  say "Using isolated Terraform ${TF_VERSION} for this bootstrap"
   local arch
   case "$(uname -m)" in
     x86_64|amd64) arch="amd64" ;;
@@ -55,7 +51,10 @@ install_terraform() {
   unzip -oq "$zip" -d "${WORK_ROOT}/bin"
   chmod +x "${WORK_ROOT}/bin/terraform"
   export PATH="${WORK_ROOT}/bin:${PATH}"
-  terraform version >/dev/null || fail "Terraform was downloaded but cannot be executed."
+
+  local active_version
+  active_version="$(terraform version | head -n 1 | sed 's/^Terraform v//')"
+  [[ "$active_version" == "$TF_VERSION" ]] || fail "Expected Terraform ${TF_VERSION}, but active version is ${active_version}."
 }
 
 prepare_repository() {
