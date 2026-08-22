@@ -26,18 +26,21 @@ jobs:
   repair:
     runs-on: ubuntu-latest
     outputs:
-      bot_id: ${{ steps.deploy-shell.outputs.id }}
+      bot_id: ${{ steps.deploy_shell.outputs.id }}
       webhook_url: ${{ steps.verify.outputs.webhook_url }}
       bot_username: ${{ steps.verify.outputs.bot_username }}
     steps:
-      - uses: actions/checkout@v4
+      - id: checkout
+        uses: actions/checkout@v4
 
       - name: Login to Yandex Container Registry
+        id: login
         uses: yc-actions/yc-cr-login@v3
         with:
           yc-sa-id: ${{ env.YC_SA_ID }}
 
       - name: Build and push Telegram bot image
+        id: build_push
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -45,7 +48,7 @@ jobs:
           docker push "$BOT_IMAGE"
 
       - name: Deploy bot shell and resolve container id
-        id: deploy-shell
+        id: deploy_shell
         uses: yc-actions/yc-sls-container-deploy@v5
         with:
           yc-sa-id: ${{ env.YC_SA_ID }}
@@ -68,6 +71,7 @@ jobs:
             TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
 
       - name: Deploy final bot revision with webhook URL
+        id: deploy_final
         uses: yc-actions/yc-sls-container-deploy@v5
         with:
           yc-sa-id: ${{ env.YC_SA_ID }}
@@ -85,7 +89,7 @@ jobs:
           revision-log-options-min-level: info
           revision-env: |
             TELEGRAM_WEBAPP_URL=${{ env.PUBLIC_WEB_URL }}
-            TELEGRAM_WEBHOOK_URL=https://${{ steps.deploy-shell.outputs.id }}.containers.yandexcloud.net/telegram/webhook
+            TELEGRAM_WEBHOOK_URL=https://${{ steps.deploy_shell.outputs.id }}.containers.yandexcloud.net/telegram/webhook
           revision-secrets: |
             TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
             TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
@@ -95,15 +99,18 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          bot_url="https://${{ steps.deploy-shell.outputs.id }}.containers.yandexcloud.net"
+          bot_url="https://${{ steps.deploy_shell.outputs.id }}.containers.yandexcloud.net"
           expected="$bot_url/telegram/webhook"
 
+          healthy=false
           for attempt in $(seq 1 24); do
             if curl --fail --silent --show-error --max-time 15 "$bot_url/health" >/tmp/health.json; then
+              healthy=true
               break
             fi
             sleep 5
           done
+          test "$healthy" = true
           cat /tmp/health.json
 
           status="$(curl --fail --silent --show-error --max-time 20 "$bot_url/telegram/status")"
@@ -119,6 +126,7 @@ jobs:
           echo "bot_username=$username" >> "$GITHUB_OUTPUT"
 
       - name: Record success marker
+        id: record_success
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -129,7 +137,8 @@ jobs:
           {
             "status": "success",
             "commit": "${GITHUB_SHA}",
-            "bot_id": "${{ steps.deploy-shell.outputs.id }}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "bot_id": "${{ steps.deploy_shell.outputs.id }}",
             "bot_username": "${{ steps.verify.outputs.bot_username }}",
             "webhook_url": "${{ steps.verify.outputs.webhook_url }}",
             "web_url": "${PUBLIC_WEB_URL}",
@@ -147,9 +156,30 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          OUT_CHECKOUT: ${{ steps.checkout.outcome }}
+          OUT_LOGIN: ${{ steps.login.outcome }}
+          OUT_BUILD_PUSH: ${{ steps.build_push.outcome }}
+          OUT_DEPLOY_SHELL: ${{ steps.deploy_shell.outcome }}
+          OUT_DEPLOY_FINAL: ${{ steps.deploy_final.outcome }}
+          OUT_VERIFY: ${{ steps.verify.outcome }}
         run: |
           set -Eeuo pipefail
-          printf '{"status":"failed","commit":"%s","checked_at":"%s"}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/tmp/telegram-status.json
+          cat >/tmp/telegram-status.json <<EOF
+          {
+            "status": "failed",
+            "commit": "${GITHUB_SHA}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "steps": {
+              "checkout": "${OUT_CHECKOUT}",
+              "login": "${OUT_LOGIN}",
+              "build_push": "${OUT_BUILD_PUSH}",
+              "deploy_shell": "${OUT_DEPLOY_SHELL}",
+              "deploy_final": "${OUT_DEPLOY_FINAL}",
+              "verify": "${OUT_VERIFY}"
+            },
+            "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
           content="$(base64 -w0 /tmp/telegram-status.json)"
           current_sha="$(gh api repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json --jq .sha 2>/dev/null || true)"
           args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/ops/telegram-status.json" -f message='ops: record Telegram repair failure [skip ci]' -f content="$content" -f branch=main)
