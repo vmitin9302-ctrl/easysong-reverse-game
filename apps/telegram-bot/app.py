@@ -1,8 +1,7 @@
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 
-from aiogram import Bot
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,13 +17,13 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-bot: Bot | None = None
-webhook_registered = False
 webhook_requests = 0
 invalid_secret_requests = 0
 start_requests = 0
+duplicate_start_requests = 0
 last_update_id: int | None = None
 last_start_at: str | None = None
+recent_start_chats: dict[int, float] = {}
 
 
 def build_start_response(chat_id: int) -> dict[str, Any]:
@@ -49,29 +48,7 @@ def build_start_response(chat_id: int) -> dict[str, Any]:
     }
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    global bot, webhook_registered
-    webhook_registered = False
-    if settings.telegram_bot_token:
-        bot = Bot(settings.telegram_bot_token)
-        if settings.telegram_webhook_url:
-            webhook_registered = bool(
-                await bot.set_webhook(
-                    url=settings.telegram_webhook_url,
-                    secret_token=settings.telegram_webhook_secret or None,
-                    allowed_updates=['message'],
-                    drop_pending_updates=False,
-                )
-            )
-    yield
-    if bot is not None:
-        await bot.session.close()
-        bot = None
-    webhook_registered = False
-
-
-app = FastAPI(title='EasySong Reverse Game Telegram Bot', lifespan=lifespan)
+app = FastAPI(title='EasySong Reverse Game Telegram Bot')
 
 
 @app.get('/health')
@@ -80,11 +57,12 @@ async def health() -> dict[str, Any]:
         'status': 'ok',
         'configured': bool(settings.telegram_bot_token),
         'webhook_url': settings.telegram_webhook_url,
-        'webhook_registered': webhook_registered,
+        'registration_mode': 'external-github',
         'delivery_mode': 'direct-json-webhook-response',
         'webhook_requests': webhook_requests,
         'invalid_secret_requests': invalid_secret_requests,
         'start_requests': start_requests,
+        'duplicate_start_requests': duplicate_start_requests,
         'last_update_id': last_update_id,
         'last_start_at': last_start_at,
     }
@@ -92,26 +70,27 @@ async def health() -> dict[str, Any]:
 
 @app.get('/telegram/status')
 async def telegram_status() -> dict[str, Any]:
-    if bot is None:
-        raise HTTPException(status_code=503, detail='Telegram bot is not configured')
-
-    webhook = await bot.get_webhook_info()
+    # No outbound Telegram API calls are made from the Serverless Container.
+    # Direct Bot API diagnostics are performed from GitHub Actions instead.
     return {
-        'url': webhook.url,
-        'pending_updates': webhook.pending_update_count,
-        'last_error': webhook.last_error_message,
         'configured_webhook_url': settings.telegram_webhook_url,
-        'webhook_registered_on_startup': webhook_registered,
+        'registration_mode': 'external-github',
+        'delivery_mode': 'direct-json-webhook-response',
+        'webhook_requests': webhook_requests,
+        'start_requests': start_requests,
+        'last_update_id': last_update_id,
+        'last_start_at': last_start_at,
     }
 
 
 @app.post('/telegram/webhook')
 async def telegram_webhook(request: Request) -> JSONResponse:
-    global webhook_requests, invalid_secret_requests, start_requests, last_update_id, last_start_at
+    global webhook_requests, invalid_secret_requests, start_requests
+    global duplicate_start_requests, last_update_id, last_start_at
 
     webhook_requests += 1
 
-    if bot is None:
+    if not settings.telegram_bot_token:
         raise HTTPException(status_code=503, detail='Telegram bot is not configured')
 
     if settings.telegram_webhook_secret:
@@ -137,10 +116,18 @@ async def telegram_webhook(request: Request) -> JSONResponse:
     )
 
     if isinstance(text, str) and text.split(maxsplit=1)[0].split('@', 1)[0] == '/start' and isinstance(chat_id, int):
+        now = monotonic()
+        previous = recent_start_chats.get(chat_id)
+        recent_start_chats[chat_id] = now
+
+        if previous is not None and now - previous < 30:
+            duplicate_start_requests += 1
+            print(f'telegram_webhook duplicate_start update_id={update_id!r}', flush=True)
+            return JSONResponse(content={'ok': True})
+
         start_requests += 1
         last_start_at = datetime.now(timezone.utc).isoformat()
-        response = build_start_response(chat_id)
         print(f'telegram_webhook start_response update_id={update_id!r}', flush=True)
-        return JSONResponse(content=response)
+        return JSONResponse(content=build_start_response(chat_id))
 
     return JSONResponse(content={'ok': True})
