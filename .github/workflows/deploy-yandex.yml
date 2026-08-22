@@ -220,6 +220,43 @@ jobs:
             TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
             TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
 
+      - name: Warm bot container and verify Telegram webhook
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bot_url="https://${{ needs.containers.outputs.bot_id }}.containers.yandexcloud.net"
+          expected_webhook="$bot_url/telegram/webhook"
+
+          echo "Warming Telegram bot container at $bot_url"
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --show-error --max-time 15 "$bot_url/health" >/tmp/bot-health.json; then
+              cat /tmp/bot-health.json
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              echo 'Bot container did not become healthy in time.' >&2
+              exit 1
+            fi
+            sleep 3
+          done
+
+          status="$(curl --fail --silent --show-error --max-time 15 "$bot_url/telegram/status")"
+          echo "$status" | jq .
+
+          actual_webhook="$(echo "$status" | jq --raw-output '.url')"
+          last_error="$(echo "$status" | jq --raw-output '.last_error // empty')"
+          if [ "$actual_webhook" != "$expected_webhook" ]; then
+            echo "Unexpected Telegram webhook: $actual_webhook" >&2
+            echo "Expected: $expected_webhook" >&2
+            exit 1
+          fi
+          if [ -n "$last_error" ]; then
+            echo "Telegram reports last webhook error: $last_error" >&2
+            exit 1
+          fi
+
+          echo 'Telegram webhook is registered and healthy.'
+
       - name: Deployment summary
         shell: bash
         run: |
