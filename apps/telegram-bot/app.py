@@ -46,6 +46,13 @@ async def lifespan(_: FastAPI):
     global bot
     if settings.telegram_bot_token:
         bot = Bot(settings.telegram_bot_token)
+        if settings.telegram_webhook_url:
+            await bot.set_webhook(
+                url=settings.telegram_webhook_url,
+                secret_token=settings.telegram_webhook_secret or None,
+                allowed_updates=dp.resolve_used_update_types(),
+                drop_pending_updates=False,
+            )
     yield
     if bot is not None:
         await bot.session.close()
