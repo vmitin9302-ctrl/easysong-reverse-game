@@ -1,14 +1,12 @@
 {
-  "status": "failed",
-  "commit": "5b62acf37ef09a8f813d0bf8df5c32a61ee7699e",
-  "run_id": "32592757893",
-  "steps": {
-    "checkout": "success",
-    "login": "success",
-    "build_push": "success",
-    "deploy_shell": "success",
-    "deploy_final": "success",
-    "verify": "failure"
-  },
-  "checked_at": "2026-08-22T19:08:30Z"
+  "status": "success",
+  "commit": "cdd58151240c4c256ce7be88bff8f961c4ff8861",
+  "run_id": "32592853056",
+  "bot_id": "bba5hgbd8seu96ko81bu",
+  "bot_username": "easygame7_bot",
+  "webhook_url": "https://bba5hgbd8seu96ko81bu.containers.yandexcloud.net/telegram/webhook",
+  "web_url": "https://easygame7-d81bb227-42b6a9.website.yandexcloud.net",
+  "delivery_mode": "webhook-response",
+  "smoke_test": "success",
+  "checked_at": "2026-08-22T19:10:19Z"
 }
