@@ -20,6 +20,7 @@ env:
   YC_RUNTIME_SA_ID: aje5ib01dp5ed3v6qmgk
   YC_LOCKBOX_SECRET_ID: e6qa23qqickfuqekoojj
   YC_LOG_GROUP_ID: e23povritvkp4nnsn3pq
+  BOT_CONTAINER_ID: bba5hgbd8seu96ko81bu
   PUBLIC_WEB_URL: https://easygame7-d81bb227-42b6a9.website.yandexcloud.net
   BOT_IMAGE: cr.yandex/crp5evltachnf8imjg32/reverse-game-bot:telegram-repair-${{ github.sha }}
 
@@ -27,7 +28,6 @@ jobs:
   repair:
     runs-on: ubuntu-latest
     outputs:
-      bot_id: ${{ steps.deploy_shell.outputs.id }}
       webhook_url: ${{ steps.verify.outputs.webhook_url }}
     steps:
       - id: checkout
@@ -78,30 +78,7 @@ jobs:
           print('direct webhook /start response smoke test: OK')
           PY
 
-      - name: Deploy bot shell and resolve container id
-        id: deploy_shell
-        uses: yc-actions/yc-sls-container-deploy@v5
-        with:
-          yc-sa-id: ${{ env.YC_SA_ID }}
-          folder-id: ${{ env.YC_FOLDER_ID }}
-          container-name: reverse-game-bot
-          public: true
-          revision-service-account-id: ${{ env.YC_RUNTIME_SA_ID }}
-          revision-cores: 1
-          revision-memory: 256Mb
-          revision-core-fraction: 100
-          revision-concurrency: 8
-          revision-image-url: ${{ env.BOT_IMAGE }}
-          revision-execution-timeout: 60
-          revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
-          revision-log-options-min-level: info
-          revision-env: |
-            TELEGRAM_WEBAPP_URL=${{ env.PUBLIC_WEB_URL }}
-          revision-secrets: |
-            TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
-            TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
-
-      - name: Deploy final bot revision with webhook URL
+      - name: Deploy final Telegram bot revision
         id: deploy_final
         uses: yc-actions/yc-sls-container-deploy@v5
         with:
@@ -120,42 +97,43 @@ jobs:
           revision-log-options-min-level: info
           revision-env: |
             TELEGRAM_WEBAPP_URL=${{ env.PUBLIC_WEB_URL }}
-            TELEGRAM_WEBHOOK_URL=https://${{ steps.deploy_shell.outputs.id }}.containers.yandexcloud.net/telegram/webhook
+            TELEGRAM_WEBHOOK_URL=https://${{ env.BOT_CONTAINER_ID }}.containers.yandexcloud.net/telegram/webhook
           revision-secrets: |
             TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
             TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
 
-      - name: Warm and verify registered webhook
+      - name: Warm and verify final registered webhook
         id: verify
         shell: bash
         run: |
           set -Eeuo pipefail
-          bot_url="https://${{ steps.deploy_shell.outputs.id }}.containers.yandexcloud.net"
+          bot_url="https://${BOT_CONTAINER_ID}.containers.yandexcloud.net"
           expected="$bot_url/telegram/webhook"
+          matched=false
 
-          healthy=false
-          for attempt in $(seq 1 24); do
-            if curl --fail --silent --show-error --max-time 20 "$bot_url/health" >/tmp/health.json; then
-              healthy=true
-              break
+          for attempt in $(seq 1 36); do
+            if curl --fail --silent --show-error --max-time 25 "$bot_url/health" >/tmp/health.json; then
+              jq . /tmp/health.json
+              configured="$(jq -r '.configured' /tmp/health.json)"
+              registered="$(jq -r '.webhook_registered' /tmp/health.json)"
+              actual="$(jq -r '.webhook_url' /tmp/health.json)"
+              delivery="$(jq -r '.delivery_mode' /tmp/health.json)"
+
+              if [ "$configured" = true ] && \
+                 [ "$registered" = true ] && \
+                 [ "$actual" = "$expected" ] && \
+                 [ "$delivery" = 'webhook-response' ]; then
+                matched=true
+                break
+              fi
             fi
+            echo "Waiting for final Yandex revision propagation ($attempt/36)..."
             sleep 5
           done
-          test "$healthy" = true
-          jq . /tmp/health.json
 
-          configured="$(jq -r '.configured' /tmp/health.json)"
-          registered="$(jq -r '.webhook_registered' /tmp/health.json)"
-          actual="$(jq -r '.webhook_url' /tmp/health.json)"
-          delivery="$(jq -r '.delivery_mode' /tmp/health.json)"
-
-          test "$configured" = true
-          test "$registered" = true
-          test "$actual" = "$expected"
-          test "$delivery" = 'webhook-response'
-
-          echo "webhook_url=$actual" >> "$GITHUB_OUTPUT"
-          echo 'Telegram setWebhook succeeded and /start uses direct webhook response.'
+          test "$matched" = true
+          echo "webhook_url=$expected" >> "$GITHUB_OUTPUT"
+          echo 'Telegram setWebhook succeeded; final revision is active; direct /start response is enabled.'
 
       - name: Record success marker
         id: record_success
@@ -170,7 +148,7 @@ jobs:
             "status": "success",
             "commit": "${GITHUB_SHA}",
             "run_id": "${GITHUB_RUN_ID}",
-            "bot_id": "${{ steps.deploy_shell.outputs.id }}",
+            "bot_id": "${BOT_CONTAINER_ID}",
             "bot_username": "easygame7_bot",
             "webhook_url": "${{ steps.verify.outputs.webhook_url }}",
             "web_url": "${PUBLIC_WEB_URL}",
@@ -194,7 +172,6 @@ jobs:
           OUT_LOGIN: ${{ steps.login.outcome }}
           OUT_BUILD_PUSH: ${{ steps.build_push.outcome }}
           OUT_SMOKE: ${{ steps.smoke.outcome }}
-          OUT_DEPLOY_SHELL: ${{ steps.deploy_shell.outcome }}
           OUT_DEPLOY_FINAL: ${{ steps.deploy_final.outcome }}
           OUT_VERIFY: ${{ steps.verify.outcome }}
         run: |
@@ -209,7 +186,6 @@ jobs:
               "login": "${OUT_LOGIN}",
               "build_push": "${OUT_BUILD_PUSH}",
               "smoke": "${OUT_SMOKE}",
-              "deploy_shell": "${OUT_DEPLOY_SHELL}",
               "deploy_final": "${OUT_DEPLOY_FINAL}",
               "verify": "${OUT_VERIFY}"
             },
