@@ -1,0 +1,19 @@
+{
+  "http_code": 400,
+  "response": {
+    "code": 3,
+    "message": "Duplicate name: reverse-game-telegram-gateway-direct",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+        "locale": "en",
+        "message": "Duplicate name: reverse-game-telegram-gateway-direct"
+      },
+      {
+        "@type": "type.googleapis.com/google.rpc.RequestInfo",
+        "requestId": "bd2a7d48-4147-41ca-ab26-98d7302732fc"
+      }
+    ]
+  },
+  "checked_at": "2026-08-22T20:04:26Z"
+}
