@@ -36,6 +36,7 @@ jobs:
         working-directory: infra/terraform
     steps:
       - uses: actions/checkout@v4
+      - run: bash -n ../bootstrap-yandex-cloud-shell.sh
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: '1.13.2'
