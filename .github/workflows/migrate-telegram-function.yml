@@ -1,5 +1,6 @@
 name: Migrate Telegram Webhook to Cloud Function
 
+# Deploy and verify a Telegram-compatible HTTPS ingress on functions.yandexcloud.net.
 on:
   workflow_dispatch:
   push:
