@@ -47,6 +47,37 @@ jobs:
           docker build -f apps/telegram-bot/Dockerfile -t "$BOT_IMAGE" .
           docker push "$BOT_IMAGE"
 
+      - name: Smoke-test direct /start webhook response
+        id: smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm -i "$BOT_IMAGE" python - <<'PY'
+          import asyncio
+          from datetime import datetime, timezone
+          from aiogram.methods import SendMessage
+          from aiogram.types import Chat, Message, User
+          from aiogram.utils.serialization import deserialize_telegram_object_to_python
+          from app import start
+
+          message = Message(
+              message_id=1,
+              date=datetime.now(timezone.utc),
+              chat=Chat(id=123456, type='private'),
+              from_user=User(id=123456, is_bot=False, first_name='Smoke'),
+              text='/start',
+          )
+          result = asyncio.run(start(message))
+          assert isinstance(result, SendMessage)
+          payload = deserialize_telegram_object_to_python(result)
+          assert payload['method'] == 'sendMessage'
+          assert 'Сможешь говорить задом наперёд?' in payload['text']
+          button = payload['reply_markup']['inline_keyboard'][0][0]
+          assert button['text'] == '🎮 Играть'
+          assert button['web_app']['url']
+          print('direct webhook /start response smoke test: OK')
+          PY
+
       - name: Deploy bot shell and resolve container id
         id: deploy_shell
         uses: yc-actions/yc-sls-container-deploy@v5
@@ -111,7 +142,7 @@ jobs:
             sleep 5
           done
           test "$healthy" = true
-          cat /tmp/health.json | jq .
+          jq . /tmp/health.json
 
           configured="$(jq -r '.configured' /tmp/health.json)"
           registered="$(jq -r '.webhook_registered' /tmp/health.json)"
@@ -144,6 +175,7 @@ jobs:
             "webhook_url": "${{ steps.verify.outputs.webhook_url }}",
             "web_url": "${PUBLIC_WEB_URL}",
             "delivery_mode": "webhook-response",
+            "smoke_test": "success",
             "checked_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
@@ -161,6 +193,7 @@ jobs:
           OUT_CHECKOUT: ${{ steps.checkout.outcome }}
           OUT_LOGIN: ${{ steps.login.outcome }}
           OUT_BUILD_PUSH: ${{ steps.build_push.outcome }}
+          OUT_SMOKE: ${{ steps.smoke.outcome }}
           OUT_DEPLOY_SHELL: ${{ steps.deploy_shell.outcome }}
           OUT_DEPLOY_FINAL: ${{ steps.deploy_final.outcome }}
           OUT_VERIFY: ${{ steps.verify.outcome }}
@@ -175,6 +208,7 @@ jobs:
               "checkout": "${OUT_CHECKOUT}",
               "login": "${OUT_LOGIN}",
               "build_push": "${OUT_BUILD_PUSH}",
+              "smoke": "${OUT_SMOKE}",
               "deploy_shell": "${OUT_DEPLOY_SHELL}",
               "deploy_final": "${OUT_DEPLOY_FINAL}",
               "verify": "${OUT_VERIFY}"
