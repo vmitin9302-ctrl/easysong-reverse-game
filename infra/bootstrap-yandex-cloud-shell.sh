@@ -123,7 +123,7 @@ terraform plan -input=false -out=bootstrap.tfplan
 printf '\nTerraform plan is ready. Creating Managed PostgreSQL and other cloud resources can incur charges.\n'
 printf 'Type APPLY to create the resources, or anything else to stop: '
 IFS= read -r CONFIRM
-if [[ "$CONFIRM" != "APPLY" ]]; then
+if [[ "${CONFIRM^^}" != "APPLY" ]]; then
   printf 'Stopped before terraform apply. You can rerun this same script later; private values remain only in your Cloud Shell home.\n'
   exit 0
 fi
