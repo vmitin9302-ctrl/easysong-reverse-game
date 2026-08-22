@@ -1,5 +1,6 @@
 name: Inspect Gateway Create Operation
 
+# Inspect the asynchronous operation returned by direct ApiGateway.Create.
 on:
   workflow_dispatch:
   push:
