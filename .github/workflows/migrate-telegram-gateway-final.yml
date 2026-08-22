@@ -1,5 +1,6 @@
 name: Final Telegram Gateway Migration
 
+# OIDC-compatible action pinned to an exact upstream commit.
 on:
   workflow_dispatch:
   push:
@@ -186,4 +187,7 @@ jobs:
             --arg checked "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{status:$status,commit:$commit,run_id:$run,steps:{function:$function,spec:$spec,gateway:$gateway,creds:$creds,probe:$probe,switch:$switch},function_id:$function_id,gateway_id:$gateway_id,gateway_url:$url,before_pending_updates:(if $before=="" then null else ($before|tonumber) end),recovered_start_chats:(if $recovered=="" then null else ($recovered|tonumber) end),pending_updates:(if $pending=="" then null else ($pending|tonumber) end),last_error:(if $error=="" then null else $error end),checked_at:$checked}' >/tmp/result.json
           content="$(base64 -w0 /tmp/result.json)"; path="ops/telegram-gateway-final/${GITHUB_SHA}.json"
-          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f message="ops: record final Telegram gateway migration ${GITHUB_SHA} [skip ci]" -f content="$content" -f branch=main >/dev/null
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${path}" --jq .sha 2>/dev/null || true)"
+          args=(--method PUT "repos/${GITHUB_REPOSITORY}/contents/${path}" -f message="ops: record final Telegram gateway migration ${GITHUB_SHA} [skip ci]" -f content="$content" -f branch=main)
+          if [ -n "$current" ]; then args+=(-f sha="$current"); fi
+          gh api "${args[@]}" >/dev/null
