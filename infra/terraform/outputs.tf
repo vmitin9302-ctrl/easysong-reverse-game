@@ -34,13 +34,13 @@ output "log_group_id" {
 }
 
 output "web_bucket" {
-  description = "Set GitHub Actions variable YC_WEB_BUCKET to this value."
-  value       = yandex_storage_bucket.web.bucket
+  description = "Set GitHub Actions variable YC_WEB_BUCKET to this value. Bucket is created by the Cloud Shell bootstrap through yc CLI."
+  value       = var.web_bucket_name
 }
 
 output "web_website_endpoint" {
   description = "Object Storage website endpoint before the custom domain/CDN is attached."
-  value       = yandex_storage_bucket.web.website_endpoint
+  value       = "https://${var.web_bucket_name}.website.yandexcloud.net"
 }
 
 output "postgres_fqdn" {
