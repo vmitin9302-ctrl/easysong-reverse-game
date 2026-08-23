@@ -23,7 +23,6 @@ def _payload(event: dict[str, Any]) -> dict[str, Any]:
         return json.loads(body or '{}')
     if isinstance(body, dict):
         return body
-    # Direct function invocation in tests can pass the Telegram update itself.
     if 'update_id' in event:
         return event
     return {}
@@ -34,13 +33,18 @@ def build_start_response(chat_id: int) -> dict[str, Any]:
         'method': 'sendMessage',
         'chat_id': chat_id,
         'text': (
-            '🎙 Сможешь говорить задом наперёд?\n\n'
-            'Запиши фразу, услышь её наоборот и попробуй повторить. '
-            'Посмотрим, сколько процентов ты наберёшь 😈'
+            '😈 Думаешь, тебя легко запутать?\n\n'
+            'Проверь себя в челлендже «Наоборот».\n\n'
+            'Скажи обычную фразу → услышь её задом наперёд → '
+            'попробуй повторить этот звук. А потом посмотрим, насколько близко ты попал 👀\n\n'
+            'Спойлер: с первого раза получается далеко не у всех 😏\n\n'
+            '🎁 А когда закончишь, я покажу тебе сервис, где можно создавать '
+            'песни, картинки, открытки и не только.\n\n'
+            'Ну что, проверим тебя? 👇'
         ),
         'reply_markup': {
             'inline_keyboard': [[{
-                'text': '🎮 Играть',
+                'text': '🎮 Проверить себя',
                 'web_app': {'url': WEBAPP_URL},
             }]],
         },
