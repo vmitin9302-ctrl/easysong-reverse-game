@@ -9,6 +9,7 @@ type Mode = 'local' | 'remote';
 type Stage = 'choose' | 'permission' | 'waiting' | 'handoff' | 'original' | 'listen' | 'attempt' | 'processing' | 'round-result' | 'final' | 'error';
 const API = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '').replace(/\/$/, '');
 const REMOTE_SESSION_KEY = 'reverse_duel_remote_session';
+const REMOTE_SESSION_MS = 30 * 60 * 1000;
 
 export default function App() {
   const telegram = useMemo(initTelegram, []);
@@ -35,14 +36,15 @@ export default function App() {
   function context() { return ctx.current ??= createAudioContext(); }
   async function restoreOrJoin() {
     try {
-      const saved = JSON.parse(sessionStorage.getItem(REMOTE_SESSION_KEY) || 'null') as { id: string; token: string } | null;
-      if (saved?.id && saved.token) {
+      const saved = JSON.parse(localStorage.getItem(REMOTE_SESSION_KEY) || 'null') as { id: string; token: string; expiresAt: number } | null;
+      if (saved?.id && saved.token && saved.expiresAt > Date.now()) {
         const restored = await getDuelMatch(saved.id, saved.token); setMode('remote'); setMatch(restored); setToken(saved.token); sync(restored, restored.player); return;
       }
-    } catch { sessionStorage.removeItem(REMOTE_SESSION_KEY); }
+      localStorage.removeItem(REMOTE_SESSION_KEY);
+    } catch { localStorage.removeItem(REMOTE_SESSION_KEY); }
     const invite = new URLSearchParams(location.search).get('invite'); if (invite) await join(invite);
   }
-  function rememberRemote(next: DuelMatch, playerToken: string) { sessionStorage.setItem(REMOTE_SESSION_KEY, JSON.stringify({ id: next.id, token: playerToken })); }
+  function rememberRemote(next: DuelMatch, playerToken: string) { localStorage.setItem(REMOTE_SESSION_KEY, JSON.stringify({ id: next.id, token: playerToken, expiresAt: Date.now() + REMOTE_SESSION_MS })); }
   function track(event: string, props: Record<string, unknown> = {}) { void trackEvent(sessionId, event, { mode, round, ...props }); }
   async function mic() { try { await context().resume(); stream.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); if (mode === 'remote' && match) sync(await getDuelMatch(match.id, token)); else setStage('original'); } catch { fail('Разреши доступ к микрофону и попробуй снова.'); } }
   function fail(text: string) { setMessage(text); setStage('error'); }
@@ -78,7 +80,7 @@ export default function App() {
   }
   async function play() { const audio = mode === 'remote' ? remoteAudio.current : reversed.current; if (!audio || playing) return; setPlaying(true); await playAudioBuffer(context(), audio); setPlaying(false); track('reverse_audio_played'); }
   function nextRound() { if (round === 1) { setRound(2); reversed.current = null; setStage('handoff'); } else setStage('final'); }
-  function reset() { sessionStorage.removeItem(REMOTE_SESSION_KEY); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setMatch(null); originals.current = [null, null]; }
+  function reset() { localStorage.removeItem(REMOTE_SESSION_KEY); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setMatch(null); originals.current = [null, null]; }
   async function share() { const text = `Дуэль «Скажи наоборот»: Игрок 1 — ${scores[0]}%, Игрок 2 — ${scores[1]}%.`; if (navigator.share) await navigator.share({ title: 'Скажи наоборот', text, url: location.href.split('?')[0] }); else { await navigator.clipboard.writeText(text); alert('Результат скопирован'); } }
   const winner = scores[0] === scores[1] ? 'Ничья 🤝' : `Победитель — Игрок ${scores[0]! > scores[1]! ? 1 : 2} 🏆`;
 
