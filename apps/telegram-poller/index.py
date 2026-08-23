@@ -45,13 +45,18 @@ def _start_message(chat_id: int) -> dict[str, Any]:
     return {
         'chat_id': chat_id,
         'text': (
-            '🎙 Сможешь говорить задом наперёд?\n\n'
-            'Запиши фразу, услышь её наоборот и попробуй повторить. '
-            'Посмотрим, сколько процентов ты наберёшь 😈'
+            '😈 Думаешь, тебя легко запутать?\n\n'
+            'Проверь себя в челлендже «Наоборот».\n\n'
+            'Скажи обычную фразу → услышь её задом наперёд → '
+            'попробуй повторить этот звук. А потом посмотрим, насколько близко ты попал 👀\n\n'
+            'Спойлер: с первого раза получается далеко не у всех 😏\n\n'
+            '🎁 А когда закончишь, я покажу тебе сервис, где можно создавать '
+            'песни, картинки, открытки и не только.\n\n'
+            'Ну что, проверим тебя? 👇'
         ),
         'reply_markup': {
             'inline_keyboard': [[{
-                'text': '🎮 Играть',
+                'text': '🎮 Проверить себя',
                 'web_app': {'url': WEBAPP_URL},
             }]],
         },
@@ -59,9 +64,6 @@ def _start_message(chat_id: int) -> dict[str, Any]:
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    # Negative offset asks Telegram for the tail of the pending queue, so this
-    # worker does not need a separate persistent offset store. The final
-    # max_update_id + 1 request confirms everything processed in this batch.
     query = urllib.parse.urlencode({
         'offset': -100,
         'limit': 100,
