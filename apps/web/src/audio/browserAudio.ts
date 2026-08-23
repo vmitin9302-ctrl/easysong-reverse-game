@@ -66,3 +66,23 @@ export async function playAudioBuffer(context: AudioContext, buffer: AudioBuffer
     }
   });
 }
+
+export function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const channels = buffer.numberOfChannels;
+  const length = buffer.length * channels * 2;
+  const bytes = new ArrayBuffer(44 + length);
+  const view = new DataView(bytes);
+  const write = (offset: number, value: string) => [...value].forEach((char, i) => view.setUint8(offset + i, char.charCodeAt(0)));
+  write(0, 'RIFF'); view.setUint32(4, 36 + length, true); write(8, 'WAVE'); write(12, 'fmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, channels, true);
+  view.setUint32(24, buffer.sampleRate, true); view.setUint32(28, buffer.sampleRate * channels * 2, true);
+  view.setUint16(32, channels * 2, true); view.setUint16(34, 16, true); write(36, 'data'); view.setUint32(40, length, true);
+  let offset = 44;
+  for (let i = 0; i < buffer.length; i += 1) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true); offset += 2;
+    }
+  }
+  return new Blob([bytes], { type: 'audio/wav' });
+}

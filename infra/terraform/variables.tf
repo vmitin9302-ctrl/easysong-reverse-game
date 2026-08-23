@@ -32,6 +32,11 @@ variable "web_bucket_name" {
   }
 }
 
+variable "audio_bucket_name" {
+  description = "Private bucket for short-lived reversed challenge and attempt clips."
+  type        = string
+}
+
 variable "github_owner" {
   description = "GitHub owner used in the OIDC subject and audience."
   type        = string

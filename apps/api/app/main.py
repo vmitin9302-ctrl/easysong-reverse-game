@@ -1,17 +1,18 @@
 import secrets
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db
-from .models import AnalyticsEvent, GameResult, GameSession, OutboundClick, ShareLink
+from .models import AnalyticsEvent, DuelMatch, DuelRound, GameResult, GameSession, OutboundClick, ShareLink
 from .settings import settings
+from .storage import delete_objects, signed_get, signed_put
 from .telegram_auth import TelegramAuthError, validate_init_data
 
 
@@ -51,6 +52,21 @@ class TelegramAuthRequest(BaseModel):
     init_data: str = Field(min_length=1, max_length=16_384)
 
 
+class MatchCreate(BaseModel):
+    session_id: uuid.UUID | None = None
+
+
+class AudioUploadRequest(BaseModel):
+    content_type: str = Field(default='audio/wav', pattern=r'^audio/[a-zA-Z0-9.+-]+$')
+
+
+class RoundScoreRequest(BaseModel):
+    score: int = Field(ge=0, le=100)
+    acoustic_similarity: float = Field(ge=0, le=1)
+    rhythm_similarity: float = Field(ge=0, le=1)
+    duration_similarity: float = Field(ge=0, le=1)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if engine is not None:
@@ -64,8 +80,167 @@ app.add_middleware(
     allow_origins=[origin.strip() for origin in settings.allowed_origins.split(',') if origin.strip()],
     allow_credentials=False,
     allow_methods=['GET', 'POST', 'OPTIONS'],
-    allow_headers=['Content-Type', 'Authorization'],
+    allow_headers=['Content-Type', 'Authorization', 'X-Player-Token'],
 )
+
+
+def require_database(db: Session | None) -> Session:
+    if db is None:
+        raise HTTPException(status_code=503, detail='Match service requires a database')
+    return db
+
+
+def match_player(match: DuelMatch, token: str | None) -> int:
+    if token and secrets.compare_digest(token, match.player_one_secret):
+        return 1
+    if token and match.player_two_secret and secrets.compare_digest(token, match.player_two_secret):
+        return 2
+    raise HTTPException(status_code=403, detail='Invalid player token')
+
+
+def match_view(db: Session, match: DuelMatch, player: int) -> dict:
+    rounds = db.query(DuelRound).filter(DuelRound.match_id == match.id).order_by(DuelRound.round_number).all()
+    return {
+        'id': str(match.id), 'invite_token': match.invite_token, 'player': player, 'status': match.status,
+        'rounds': [
+            {'number': row.round_number, 'challenger': row.challenger, 'responder': row.responder,
+             'status': row.status, 'score': row.score, 'audio_expires_at': row.audio_expires_at}
+            for row in rounds
+        ],
+    }
+
+
+def active_round(db: Session, match_id: uuid.UUID, number: int) -> DuelRound:
+    row = db.query(DuelRound).filter(DuelRound.match_id == match_id, DuelRound.round_number == number).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail='Round not found')
+    return row
+
+
+def ensure_audio_available(row: DuelRound) -> None:
+    expires_at = row.audio_expires_at
+    if expires_at is None or expires_at <= datetime.now(UTC):
+        raise HTTPException(status_code=410, detail='Temporary audio has expired')
+
+
+@app.post('/v1/matches', status_code=201)
+def create_match(payload: MatchCreate, db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db)
+    if payload.session_id and db.get(GameSession, payload.session_id) is None:
+        raise HTTPException(status_code=404, detail='Session not found')
+    match = DuelMatch(session_id=payload.session_id, invite_token=secrets.token_urlsafe(9), player_one_secret=secrets.token_urlsafe(32))
+    db.add(match)
+    db.flush()
+    db.add_all([
+        DuelRound(match_id=match.id, round_number=1, challenger=1, responder=2),
+        DuelRound(match_id=match.id, round_number=2, challenger=2, responder=1),
+    ])
+    db.commit()
+    return {**match_view(db, match, 1), 'player_token': match.player_one_secret}
+
+
+@app.post('/v1/matches/join/{invite_token}')
+def join_match(invite_token: str, db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db)
+    match = db.query(DuelMatch).filter(DuelMatch.invite_token == invite_token).with_for_update().one_or_none()
+    if match is None:
+        raise HTTPException(status_code=404, detail='Match not found')
+    if match.player_two_secret:
+        raise HTTPException(status_code=409, detail='Match already has two players')
+    match.player_two_secret = secrets.token_urlsafe(32)
+    match.status = 'round_1'
+    db.commit()
+    return {**match_view(db, match, 2), 'player_token': match.player_two_secret}
+
+
+@app.get('/v1/matches/{match_id}')
+def get_match(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db)
+    match = db.get(DuelMatch, match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail='Match not found')
+    return match_view(db, match, match_player(match, x_player_token))
+
+
+@app.post('/v1/matches/{match_id}/rounds/{number}/challenge-upload')
+def challenge_upload(match_id: uuid.UUID, number: int, payload: AudioUploadRequest, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db); match = db.get(DuelMatch, match_id)
+    if match is None: raise HTTPException(status_code=404, detail='Match not found')
+    player = match_player(match, x_player_token); round_row = active_round(db, match_id, number)
+    if player != round_row.challenger or round_row.status != 'awaiting_challenge': raise HTTPException(status_code=409, detail='Challenge upload is not allowed now')
+    key = f'matches/{match_id}/round-{number}/challenge-{secrets.token_hex(12)}.wav'
+    try: url = signed_put(key, payload.content_type)
+    except RuntimeError as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
+    round_row.challenge_object_key = key; round_row.audio_expires_at = datetime.now(UTC) + timedelta(seconds=settings.audio_ttl_seconds)
+    db.commit(); return {'upload_url': url, 'expires_at': round_row.audio_expires_at}
+
+
+@app.post('/v1/matches/{match_id}/rounds/{number}/challenge-ready')
+def challenge_ready(match_id: uuid.UUID, number: int, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db); match = db.get(DuelMatch, match_id)
+    if match is None: raise HTTPException(status_code=404, detail='Match not found')
+    round_row = active_round(db, match_id, number)
+    if match_player(match, x_player_token) != round_row.challenger or not round_row.challenge_object_key: raise HTTPException(status_code=409, detail='Challenge is not uploaded')
+    round_row.status = 'awaiting_attempt'; db.commit(); return {'accepted': True}
+
+
+@app.get('/v1/matches/{match_id}/rounds/{number}/challenge-audio')
+def challenge_audio(match_id: uuid.UUID, number: int, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db); match = db.get(DuelMatch, match_id)
+    if match is None: raise HTTPException(status_code=404, detail='Match not found')
+    round_row = active_round(db, match_id, number)
+    if match_player(match, x_player_token) != round_row.responder or round_row.status != 'awaiting_attempt': raise HTTPException(status_code=409, detail='Audio is not available')
+    ensure_audio_available(round_row)
+    return {'download_url': signed_get(round_row.challenge_object_key), 'expires_at': round_row.audio_expires_at}
+
+
+@app.post('/v1/matches/{match_id}/rounds/{number}/attempt-upload')
+def attempt_upload(match_id: uuid.UUID, number: int, payload: AudioUploadRequest, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db); match = db.get(DuelMatch, match_id)
+    if match is None: raise HTTPException(status_code=404, detail='Match not found')
+    round_row = active_round(db, match_id, number)
+    if match_player(match, x_player_token) != round_row.responder or round_row.status != 'awaiting_attempt': raise HTTPException(status_code=409, detail='Attempt upload is not allowed now')
+    key = f'matches/{match_id}/round-{number}/attempt-{secrets.token_hex(12)}.wav'
+    try: url = signed_put(key, payload.content_type)
+    except RuntimeError as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
+    round_row.attempt_object_key = key
+    round_row.audio_expires_at = datetime.now(UTC) + timedelta(seconds=settings.audio_ttl_seconds)
+    db.commit(); return {'upload_url': url, 'expires_at': round_row.audio_expires_at}
+
+
+@app.post('/v1/matches/{match_id}/rounds/{number}/attempt-ready')
+def attempt_ready(match_id: uuid.UUID, number: int, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db); match = db.get(DuelMatch, match_id)
+    if match is None: raise HTTPException(status_code=404, detail='Match not found')
+    round_row = active_round(db, match_id, number)
+    if match_player(match, x_player_token) != round_row.responder or not round_row.attempt_object_key: raise HTTPException(status_code=409, detail='Attempt is not uploaded')
+    round_row.status = 'awaiting_score'; db.commit(); return {'accepted': True}
+
+
+@app.get('/v1/matches/{match_id}/rounds/{number}/attempt-audio')
+def attempt_audio(match_id: uuid.UUID, number: int, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db); match = db.get(DuelMatch, match_id)
+    if match is None: raise HTTPException(status_code=404, detail='Match not found')
+    round_row = active_round(db, match_id, number)
+    if match_player(match, x_player_token) != round_row.challenger or round_row.status != 'awaiting_score': raise HTTPException(status_code=409, detail='Attempt is not available')
+    ensure_audio_available(round_row)
+    return {'download_url': signed_get(round_row.attempt_object_key), 'expires_at': round_row.audio_expires_at}
+
+
+@app.post('/v1/matches/{match_id}/rounds/{number}/score')
+def submit_round_score(match_id: uuid.UUID, number: int, payload: RoundScoreRequest, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db); match = db.get(DuelMatch, match_id)
+    if match is None: raise HTTPException(status_code=404, detail='Match not found')
+    row = active_round(db, match_id, number)
+    if match_player(match, x_player_token) != row.challenger or row.status != 'awaiting_score': raise HTTPException(status_code=409, detail='Score is not allowed now')
+    row.score = payload.score; row.score_breakdown = payload.model_dump(); row.status = 'complete'
+    if number == 1: match.status = 'round_2'
+    else: match.status = 'finished'; match.finished_at = datetime.now(UTC)
+    keys = [key for key in (row.challenge_object_key, row.attempt_object_key) if key]
+    row.challenge_object_key = None; row.attempt_object_key = None; db.commit()
+    try: delete_objects(keys)
+    except Exception: pass
+    return match_view(db, match, match_player(match, x_player_token))
 
 
 @app.get('/health')

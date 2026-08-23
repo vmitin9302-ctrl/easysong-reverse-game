@@ -105,10 +105,16 @@ jobs:
           revision-env: |
             ALLOWED_ORIGINS=${{ steps.urls.outputs.web_url }}
             EASYSONG_URL=https://easysong.ru/webapp/auth?next=%2Fwebapp
+            S3_ENDPOINT_URL=https://storage.yandexcloud.net
+            S3_REGION=ru-central1
+            AUDIO_TTL_SECONDS=1200
           revision-secrets: |
             DATABASE_URL=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/DATABASE_URL
             SESSION_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/SESSION_SECRET
             TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
+            S3_BUCKET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/S3_BUCKET
+            S3_ACCESS_KEY_ID=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/S3_ACCESS_KEY_ID
+            S3_SECRET_ACCESS_KEY=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/S3_SECRET_ACCESS_KEY
 
   web:
     needs: [configuration, api]

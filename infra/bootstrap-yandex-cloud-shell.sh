@@ -92,12 +92,14 @@ if [[ ! -f "$VARS_FILE" ]]; then
   WEBHOOK_SECRET="$(openssl rand -hex 32)"
   BUCKET_SUFFIX="$(openssl rand -hex 3)"
   WEB_BUCKET="easygame7-${FOLDER_ID: -8}-${BUCKET_SUFFIX}"
+  AUDIO_BUCKET="easygame7-audio-${FOLDER_ID: -8}-${BUCKET_SUFFIX}"
 
   umask 077
   cat > "$VARS_FILE" <<EOF
 cloud_id                 = "${CLOUD_ID}"
 folder_id                = "${FOLDER_ID}"
 web_bucket_name          = "${WEB_BUCKET}"
+audio_bucket_name        = "${AUDIO_BUCKET}"
 db_password              = "${DB_PASSWORD}"
 session_secret           = "${SESSION_SECRET}"
 telegram_bot_token       = "${TELEGRAM_BOT_TOKEN}"
@@ -108,8 +110,15 @@ else
   say "Existing private bootstrap secrets found; reusing them for an idempotent retry"
 fi
 
+if ! grep -q '^[[:space:]]*audio_bucket_name[[:space:]]*=' "$VARS_FILE"; then
+  BUCKET_SUFFIX="$(openssl rand -hex 3)"
+  printf 'audio_bucket_name        = "easygame7-audio-%s-%s"\n' "${FOLDER_ID: -8}" "$BUCKET_SUFFIX" >> "$VARS_FILE"
+fi
+
 WEB_BUCKET="$(awk -F'"' '/^[[:space:]]*web_bucket_name[[:space:]]*=/{print $2; exit}' "$VARS_FILE")"
 [[ -n "$WEB_BUCKET" ]] || fail "Could not read web_bucket_name from private terraform.tfvars."
+AUDIO_BUCKET="$(awk -F'"' '/^[[:space:]]*audio_bucket_name[[:space:]]*=/{print $2; exit}' "$VARS_FILE")"
+[[ -n "$AUDIO_BUCKET" ]] || fail "Could not read audio_bucket_name from private terraform.tfvars."
 
 cp "$VARS_FILE" terraform.tfvars
 if [[ -f "$STATE_FILE" ]]; then
@@ -164,6 +173,21 @@ ensure_web_bucket() {
 }
 
 ensure_web_bucket
+
+ensure_audio_bucket() {
+  say "Ensuring private temporary-audio bucket"
+  if ! yc storage bucket get --name "$AUDIO_BUCKET" --folder-id "$FOLDER_ID" >/dev/null 2>&1; then
+    yc storage bucket create \
+      --name "$AUDIO_BUCKET" \
+      --folder-id "$FOLDER_ID" \
+      --tags project=reverse-game,purpose=temporary-duel-audio,managed_by=bootstrap \
+      >/dev/null
+  fi
+  yc storage bucket get --name "$AUDIO_BUCKET" --folder-id "$FOLDER_ID" >/dev/null
+  printf 'Private temporary-audio bucket ready: %s\n' "$AUDIO_BUCKET"
+}
+
+ensure_audio_bucket
 terraform output -json > "$OUTPUT_FILE"
 
 say "Bootstrap completed"

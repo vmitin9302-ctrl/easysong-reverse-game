@@ -239,6 +239,10 @@ h2 {
   color: #6244d8;
   background: #eee9ff;
 }
+.mode-button { margin-top: 10px; }
+.duel-scores { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0 22px; }
+.duel-scores > div { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 10px; border-radius: 22px; background: #f4f1fc; color: #77727f; }
+.duel-scores strong { color: #6746df; font-size: 34px; }
 
 .button--ghost {
   margin-top: 9px;

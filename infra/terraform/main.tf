@@ -22,6 +22,7 @@ locals {
     "container-registry.images.puller",
     "lockbox.payloadViewer",
     "logging.writer",
+    "storage.editor",
   ])
 
   database_url = "postgresql+psycopg://${var.db_user}:${urlencode(var.db_password)}@${yandex_mdb_postgresql_cluster_v2.postgres.hosts["primary"].fqdn}:6432/${var.db_name}?sslmode=require"
@@ -161,6 +162,11 @@ resource "yandex_lockbox_secret" "app" {
   labels              = local.labels
 }
 
+resource "yandex_iam_service_account_static_access_key" "audio_storage" {
+  service_account_id = yandex_iam_service_account.runtime.id
+  description        = "Private temporary duel audio signing key"
+}
+
 resource "yandex_lockbox_secret_version_hashed" "app" {
   secret_id = yandex_lockbox_secret.app.id
 
@@ -175,4 +181,13 @@ resource "yandex_lockbox_secret_version_hashed" "app" {
 
   key_4        = "TELEGRAM_WEBHOOK_SECRET"
   text_value_4 = var.telegram_webhook_secret
+
+  key_5        = "S3_BUCKET"
+  text_value_5 = var.audio_bucket_name
+
+  key_6        = "S3_ACCESS_KEY_ID"
+  text_value_6 = yandex_iam_service_account_static_access_key.audio_storage.access_key
+
+  key_7        = "S3_SECRET_ACCESS_KEY"
+  text_value_7 = yandex_iam_service_account_static_access_key.audio_storage.secret_key
 }

@@ -1,579 +1,101 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { prepareSignal, scoreSignals, type ScoreBreakdown } from '@reverse-game/audio-engine';
-import {
-  createGameSession,
-  createShareLink,
-  flushEventQueue,
-  saveGameResult,
-  trackEvent,
-} from './api';
-import {
-  audioBufferToMono,
-  createAudioContext,
-  decodeRecording,
-  playAudioBuffer,
-  reverseAudioBuffer,
-  selectRecorderMimeType,
-} from './audio/browserAudio';
+import { createDuelMatch, createGameSession, downloadRoundAudio, getDuelMatch, joinDuelMatch, submitRoundScore, trackEvent, uploadRoundAudio, type DuelMatch } from './api';
+import { audioBufferToMono, audioBufferToWav, createAudioContext, decodeRecording, playAudioBuffer, reverseAudioBuffer, selectRecorderMimeType } from './audio/browserAudio';
 import { initTelegram } from './telegram';
 import './styles.css';
 
-type Stage =
-  | 'ready'
-  | 'permission'
-  | 'record-original'
-  | 'listen-reversed'
-  | 'record-attempt'
-  | 'processing'
-  | 'result'
-  | 'error';
-
-type RetryTarget = 'permission' | 'original' | 'attempt';
-
-type GameError = {
-  title: string;
-  message: string;
-  retry: RetryTarget;
-};
-
-type RecordingKind = 'original' | 'attempt';
-
-const MAX_RECORDING_MS = 8_000;
-const EASYSONG_FALLBACK = 'https://easysong.ru/webapp/auth?next=%2Fwebapp';
-
-function scoreLabel(score: number): string {
-  if (score < 30) return 'Что это сейчас было? 😂';
-  if (score < 50) return 'Начало положено';
-  if (score < 70) return 'Уже похоже!';
-  if (score < 85) return 'Очень близко 🔥';
-  if (score < 95) return 'Ты вообще человек?';
-  return 'МАСТЕР НАОБОРОТ 👑';
-}
-
-function Progress({ step }: { step: number }) {
-  return (
-    <div className="progress" aria-label={`Шаг ${step} из 3`}>
-      {[1, 2, 3].map((item) => (
-        <span key={item} className={item <= step ? 'progress__dot progress__dot--active' : 'progress__dot'} />
-      ))}
-    </div>
-  );
-}
-
-function Waveform({ active = false }: { active?: boolean }) {
-  return (
-    <div className={active ? 'waveform waveform--active' : 'waveform'} aria-hidden="true">
-      {Array.from({ length: 17 }, (_, index) => (
-        <span key={index} style={{ '--bar': index } as CSSProperties} />
-      ))}
-    </div>
-  );
-}
+type Mode = 'local' | 'remote';
+type Stage = 'choose' | 'permission' | 'waiting' | 'handoff' | 'original' | 'listen' | 'attempt' | 'processing' | 'round-result' | 'final' | 'error';
+const API = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '').replace(/\/$/, '');
+const REMOTE_SESSION_KEY = 'reverse_duel_remote_session';
 
 export default function App() {
-  const [stage, setStage] = useState<Stage>('ready');
-  const [isRecording, setIsRecording] = useState(false);
-  const [elapsedMs, setElapsedMs] = useState(0);
-  const [listenCount, setListenCount] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [score, setScore] = useState<ScoreBreakdown | null>(null);
-  const [gameError, setGameError] = useState<GameError | null>(null);
-  const [telegram] = useState(() => initTelegram());
-  const [sessionId, setSessionId] = useState<string | null>(null);
-
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<BlobPart[]>([]);
-  const recordingKindRef = useRef<RecordingKind | null>(null);
-  const intervalRef = useRef<number | null>(null);
-  const timeoutRef = useRef<number | null>(null);
-  const recordingStartedAtRef = useRef(0);
-  const originalRef = useRef<AudioBuffer | null>(null);
-  const reversedOriginalRef = useRef<AudioBuffer | null>(null);
-  const reconstructedRef = useRef<AudioBuffer | null>(null);
-  const bootstrappedRef = useRef(false);
-
-  const referralToken = useMemo(() => new URLSearchParams(window.location.search).get('ref') || undefined, []);
-  const source = referralToken ? 'share' : telegram.isTelegram ? 'telegram' : 'web';
-
-  const easysongHref = useMemo(() => {
-    const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '');
-    if (apiBase) {
-      const params = new URLSearchParams({ source, campaign: 'reverse_game' });
-      if (sessionId) params.set('sid', sessionId);
-      return `${apiBase}/go/easysong?${params.toString()}`;
-    }
-    return (import.meta.env.VITE_EASYSONG_URL as string | undefined) || EASYSONG_FALLBACK;
-  }, [sessionId, source]);
+  const telegram = useMemo(initTelegram, []);
+  const [mode, setMode] = useState<Mode | null>(null), [stage, setStage] = useState<Stage>('choose');
+  const [round, setRound] = useState(1), [scores, setScores] = useState<(number | null)[]>([null, null]);
+  const [sessionId, setSessionId] = useState<string | null>(null), [match, setMatch] = useState<DuelMatch | null>(null);
+  const [token, setToken] = useState(''), [message, setMessage] = useState(''), [recording, setRecording] = useState(false), [playing, setPlaying] = useState(false);
+  const ctx = useRef<AudioContext | null>(null), stream = useRef<MediaStream | null>(null), recorder = useRef<MediaRecorder | null>(null);
+  const chunks = useRef<BlobPart[]>([]), originals = useRef<(AudioBuffer | null)[]>([null, null]), reversed = useRef<AudioBuffer | null>(null), remoteAudio = useRef<AudioBuffer | null>(null);
+  const challenger = round, responder = round === 1 ? 2 : 1, player = match?.player ?? 1;
+  const inviteUrl = match ? `${location.origin}${location.pathname}?invite=${match.invite_token}` : '';
 
   useEffect(() => {
-    if (bootstrappedRef.current) return;
-    bootstrappedRef.current = true;
-
-    void (async () => {
-      await flushEventQueue();
-      try {
-        const id = await createGameSession({
-          source,
-          platform: telegram.isTelegram ? 'telegram_mini_app' : 'web',
-          campaign: 'reverse_game',
-          referralToken,
-        });
-        setSessionId(id);
-        await trackEvent(id, 'game_opened', {
-          source,
-          telegram: telegram.isTelegram,
-          referral: Boolean(referralToken),
-        });
-      } catch {
-        // The game itself remains fully playable without the API.
-      }
-    })();
-
-    const onOnline = () => void flushEventQueue();
-    window.addEventListener('online', onOnline);
-    return () => window.removeEventListener('online', onOnline);
-  }, [referralToken, source, telegram.isTelegram]);
-
-  useEffect(() => {
-    return () => {
-      if (intervalRef.current) window.clearInterval(intervalRef.current);
-      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
-      if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      void audioContextRef.current?.close();
-    };
+    void createGameSession({ source: telegram.isTelegram ? 'telegram' : 'web', platform: telegram.isTelegram ? 'telegram_mini_app' : 'web', campaign: 'reverse_duel' }).then(setSessionId).catch(() => undefined);
+    void restoreOrJoin();
+    return () => { stream.current?.getTracks().forEach((t) => t.stop()); void ctx.current?.close(); };
   }, []);
+  useEffect(() => {
+    if (!match || !token || match.status === 'finished') return;
+    const timer = window.setInterval(() => void getDuelMatch(match.id, token).then(sync).catch(() => undefined), 2000);
+    return () => window.clearInterval(timer);
+  }, [match?.id, match?.status, token]);
 
-  function track(eventName: string, properties: Record<string, unknown> = {}) {
-    void trackEvent(sessionId, eventName, properties);
-  }
-
-  function audioContext(): AudioContext {
-    if (!audioContextRef.current) audioContextRef.current = createAudioContext();
-    return audioContextRef.current;
-  }
-
-  function fail(error: GameError) {
-    setIsRecording(false);
-    setIsPlaying(false);
-    setGameError(error);
-    setStage('error');
-  }
-
-  async function requestMicrophone() {
-    track('microphone_prompt_shown');
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      fail({
-        title: 'Этот браузер не поддерживает запись',
-        message: 'Открой игру в актуальном Chrome, Safari, Edge или внутри Telegram.',
-        retry: 'permission',
-      });
-      return;
-    }
-
+  function context() { return ctx.current ??= createAudioContext(); }
+  async function restoreOrJoin() {
     try {
-      await audioContext().resume();
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      });
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = stream;
-      setGameError(null);
-      setStage('record-original');
-      track('microphone_granted');
-    } catch {
-      track('microphone_denied');
-      fail({
-        title: 'Не получилось включить микрофон',
-        message: 'Разреши доступ к микрофону в настройках браузера и попробуй снова.',
-        retry: 'permission',
-      });
-    }
-  }
-
-  function clearRecordingTimers() {
-    if (intervalRef.current) window.clearInterval(intervalRef.current);
-    if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
-    intervalRef.current = null;
-    timeoutRef.current = null;
-  }
-
-  async function processRecording(kind: RecordingKind, blob: Blob) {
-    try {
-      const context = audioContext();
-      const decoded = await decodeRecording(context, blob);
-      const mono = audioBufferToMono(decoded);
-      const prepared = prepareSignal(mono, decoded.sampleRate);
-
-      if (!prepared) {
-        fail({
-          title: 'Кажется, я ничего не услышал 😅',
-          message: 'Скажи фразу чуть громче и подержи запись хотя бы секунду.',
-          retry: kind,
-        });
-        return;
+      const saved = JSON.parse(sessionStorage.getItem(REMOTE_SESSION_KEY) || 'null') as { id: string; token: string } | null;
+      if (saved?.id && saved.token) {
+        const restored = await getDuelMatch(saved.id, saved.token); setMode('remote'); setMatch(restored); setToken(saved.token); sync(restored, restored.player); return;
       }
-
-      if (kind === 'original') {
-        originalRef.current = decoded;
-        reversedOriginalRef.current = reverseAudioBuffer(context, decoded);
-        setListenCount(0);
-        setStage('listen-reversed');
-        track('original_recording_completed', { duration_ms: Math.round(decoded.duration * 1000) });
-        return;
-      }
-
-      track('attempt_recording_completed', { duration_ms: Math.round(decoded.duration * 1000) });
-      setStage('processing');
-      const reconstructed = reverseAudioBuffer(context, decoded);
-      reconstructedRef.current = reconstructed;
-      await new Promise((resolve) => window.setTimeout(resolve, 80));
-
-      const original = originalRef.current;
-      if (!original) throw new Error('Original recording is missing');
-
-      const result = scoreSignals(
-        audioBufferToMono(original),
-        original.sampleRate,
-        audioBufferToMono(reconstructed),
-        reconstructed.sampleRate,
-      );
-
-      if (!result) {
-        fail({
-          title: 'Не получилось сравнить записи',
-          message: 'Попробуй повторить услышанное ещё раз и говори чуть громче.',
-          retry: 'attempt',
-        });
-        return;
-      }
-
-      setScore(result);
-      setStage('result');
-      track('score_generated', { score: result.score });
-      void saveGameResult(
-        sessionId,
-        result,
-        original.duration * 1000,
-        decoded.duration * 1000,
-      ).catch(() => undefined);
-    } catch {
-      fail({
-        title: 'Что-то пошло не так',
-        message: 'Не удалось обработать запись. Запишем ещё раз?',
-        retry: kind,
-      });
-    }
+    } catch { sessionStorage.removeItem(REMOTE_SESSION_KEY); }
+    const invite = new URLSearchParams(location.search).get('invite'); if (invite) await join(invite);
   }
-
-  function startRecording(kind: RecordingKind) {
-    const stream = streamRef.current;
-    if (!stream) {
-      setStage('permission');
-      return;
-    }
-
-    try {
-      const mimeType = selectRecorderMimeType();
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-      chunksRef.current = [];
-      recordingKindRef.current = kind;
-      recorderRef.current = recorder;
-
-      recorder.addEventListener('dataavailable', (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
-      });
-
-      recorder.addEventListener(
-        'stop',
-        () => {
-          clearRecordingTimers();
-          setIsRecording(false);
-          const recordingKind = recordingKindRef.current;
-          recordingKindRef.current = null;
-          const blob = new Blob(chunksRef.current, {
-            type: recorder.mimeType || mimeType || 'audio/webm',
-          });
-          if (recordingKind) void processRecording(recordingKind, blob);
-        },
-        { once: true },
-      );
-
-      recordingStartedAtRef.current = performance.now();
-      setElapsedMs(0);
-      setIsRecording(true);
-      recorder.start(100);
-      track(kind === 'original' ? 'original_recording_started' : 'attempt_recording_started');
-
-      intervalRef.current = window.setInterval(() => {
-        setElapsedMs(performance.now() - recordingStartedAtRef.current);
-      }, 50);
-      timeoutRef.current = window.setTimeout(() => stopRecording(), MAX_RECORDING_MS);
-    } catch {
-      fail({
-        title: 'Не удалось начать запись',
-        message: 'Проверь микрофон и попробуй снова.',
-        retry: kind,
-      });
-    }
+  function rememberRemote(next: DuelMatch, playerToken: string) { sessionStorage.setItem(REMOTE_SESSION_KEY, JSON.stringify({ id: next.id, token: playerToken })); }
+  function track(event: string, props: Record<string, unknown> = {}) { void trackEvent(sessionId, event, { mode, round, ...props }); }
+  async function mic() { try { await context().resume(); stream.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); if (mode === 'remote' && match) sync(await getDuelMatch(match.id, token)); else setStage('original'); } catch { fail('Разреши доступ к микрофону и попробуй снова.'); } }
+  function fail(text: string) { setMessage(text); setStage('error'); }
+  async function choose(value: Mode) { setMode(value); track('duel_mode_selected', { value }); if (value === 'local') setStage('permission'); else try { const created = await createDuelMatch(sessionId); const playerToken = created.player_token!; setMatch(created); setToken(playerToken); rememberRemote(created, playerToken); setStage('waiting'); track('match_created'); } catch { fail('Не удалось создать комнату. Проверь API и хранилище.'); } }
+  async function join(invite: string) { setMode('remote'); setStage('waiting'); try { const joined = await joinDuelMatch(invite); const playerToken = joined.player_token!; setMatch(joined); setToken(playerToken); rememberRemote(joined, playerToken); track('match_joined'); setStage('permission'); } catch { fail('Комната недоступна или уже заполнена.'); } }
+  function sync(next: DuelMatch, currentPlayer = player) {
+    setMatch(next); setScores(next.rounds.map((r) => r.score));
+    if (next.status === 'finished') return setStage('final');
+    if (next.status === 'waiting_for_player_2') return setStage('waiting');
+    const active = next.rounds.find((r) => r.status !== 'complete')!; setRound(active.number);
+    if (active.challenger === currentPlayer && active.status === 'awaiting_challenge') setStage(stream.current ? 'original' : 'permission');
+    else if (active.responder === currentPlayer && active.status === 'awaiting_attempt') void loadChallenge(next.id, active.number);
+    else if (active.challenger === currentPlayer && active.status === 'awaiting_score') void scoreAttempt(next.id, active.number);
+    else setStage('waiting');
   }
-
-  function stopRecording() {
-    if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
+  async function loadChallenge(id: string, n: number) { try { remoteAudio.current = await decodeRecording(context(), await downloadRoundAudio(id, n, 'challenge', token)); setStage('listen'); } catch { setStage('waiting'); } }
+  async function scoreAttempt(id: string, n: number) {
+    if (stage === 'processing') return; setStage('processing');
+    try { const original = originals.current[n - 1]; if (!original) throw new Error('Локальный оригинал потерян — не закрывай вкладку во время матча.'); const attempt = await decodeRecording(context(), await downloadRoundAudio(id, n, 'attempt', token)); const restored = reverseAudioBuffer(context(), attempt); const result = scoreSignals(audioBufferToMono(original), original.sampleRate, audioBufferToMono(restored), restored.sampleRate); if (!result) throw new Error('Не удалось сравнить звук.'); sync(await submitRoundScore(id, n, token, result)); track('round_scored', { score: result.score }); } catch (e) { fail(e instanceof Error ? e.message : 'Ошибка сравнения'); }
   }
-
-  async function play(buffer: AudioBuffer | null, countListen = false) {
-    if (!buffer || isPlaying) return;
-    try {
-      setIsPlaying(true);
-      await playAudioBuffer(audioContext(), buffer);
-      if (countListen) {
-        setListenCount((value) => Math.min(3, value + 1));
-        track('reverse_audio_played', { play_number: listenCount + 1 });
-      }
-    } finally {
-      setIsPlaying(false);
-    }
+  function start(kind: 'original' | 'attempt') {
+    if (!stream.current) return setStage('permission'); const mime = selectRecorderMimeType(); const item = mime ? new MediaRecorder(stream.current, { mimeType: mime }) : new MediaRecorder(stream.current); recorder.current = item; chunks.current = [];
+    item.ondataavailable = (e) => { if (e.data.size) chunks.current.push(e.data); }; item.onstop = () => void process(kind, new Blob(chunks.current, { type: item.mimeType || 'audio/webm' })); item.start(100); setRecording(true); window.setTimeout(() => { if (item.state === 'recording') item.stop(); }, 8000); track(`${kind}_recording_started`);
   }
-
-  function resetRound() {
-    if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
-    clearRecordingTimers();
-    originalRef.current = null;
-    reversedOriginalRef.current = null;
-    reconstructedRef.current = null;
-    setScore(null);
-    setGameError(null);
-    setListenCount(0);
-    setElapsedMs(0);
-    setIsRecording(false);
-    setStage(streamRef.current ? 'record-original' : 'permission');
-    track('retry_clicked');
+  function stop() { if (recorder.current?.state === 'recording') recorder.current.stop(); }
+  async function process(kind: 'original' | 'attempt', blob: Blob) {
+    setRecording(false); setStage('processing');
+    try { const audio = await decodeRecording(context(), blob); if (!prepareSignal(audioBufferToMono(audio), audio.sampleRate)) throw new Error('Говори чуть громче и не короче секунды.');
+      if (kind === 'original') { originals.current[round - 1] = audio; reversed.current = reverseAudioBuffer(context(), audio); if (mode === 'remote') { await uploadRoundAudio(match!.id, round, 'challenge', token, audioBufferToWav(reversed.current)); setStage('waiting'); } else setStage('handoff'); }
+      else if (mode === 'remote') { await uploadRoundAudio(match!.id, round, 'attempt', token, audioBufferToWav(audio)); setStage('waiting'); }
+      else { const restored = reverseAudioBuffer(context(), audio), original = originals.current[round - 1]!; const result = scoreSignals(audioBufferToMono(original), original.sampleRate, audioBufferToMono(restored), restored.sampleRate); if (!result) throw new Error('Не удалось сравнить записи.'); const next = [...scores]; next[responder - 1] = result.score; setScores(next); setStage('round-result'); track('round_scored', { score: result.score }); }
+    } catch (e) { fail(e instanceof Error ? e.message : 'Ошибка обработки'); }
   }
+  async function play() { const audio = mode === 'remote' ? remoteAudio.current : reversed.current; if (!audio || playing) return; setPlaying(true); await playAudioBuffer(context(), audio); setPlaying(false); track('reverse_audio_played'); }
+  function nextRound() { if (round === 1) { setRound(2); reversed.current = null; setStage('handoff'); } else setStage('final'); }
+  function reset() { sessionStorage.removeItem(REMOTE_SESSION_KEY); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setMatch(null); originals.current = [null, null]; }
+  async function share() { const text = `Дуэль «Скажи наоборот»: Игрок 1 — ${scores[0]}%, Игрок 2 — ${scores[1]}%.`; if (navigator.share) await navigator.share({ title: 'Скажи наоборот', text, url: location.href.split('?')[0] }); else { await navigator.clipboard.writeText(text); alert('Результат скопирован'); } }
+  const winner = scores[0] === scores[1] ? 'Ничья 🤝' : `Победитель — Игрок ${scores[0]! > scores[1]! ? 1 : 2} 🏆`;
 
-  function retryAfterError() {
-    if (!gameError) return;
-    setGameError(null);
-    if (gameError.retry === 'permission') {
-      setStage('permission');
-      return;
-    }
-    setStage(gameError.retry === 'original' ? 'record-original' : 'record-attempt');
-  }
-
-  async function shareResult() {
-    const value = score?.score ?? 0;
-    track('share_clicked', { score: value });
-
-    let shareUrl = window.location.href.split('?')[0];
-    try {
-      const token = await createShareLink(sessionId, value);
-      if (token) {
-        const url = new URL(window.location.origin + window.location.pathname);
-        url.searchParams.set('ref', token);
-        shareUrl = url.toString();
-        track('share_created', { token });
-      }
-    } catch {
-      // A generic share link still works when the backend is unavailable.
-    }
-
-    const text = `Я набрал ${value}% в «Скажи наоборот» 😈 Сможешь лучше?`;
-    const shareData = { title: 'Скажи наоборот', text, url: shareUrl };
-
-    if (navigator.share) {
-      try {
-        await navigator.share(shareData);
-        return;
-      } catch {
-        return;
-      }
-    }
-
-    if (navigator.clipboard) await navigator.clipboard.writeText(`${text} ${shareUrl}`);
-    window.alert('Ссылка на игру скопирована');
-  }
-
-  const seconds = Math.min(8, elapsedMs / 1000).toFixed(1);
-
-  return (
-    <main className="app-shell">
-      <header className="brandbar">
-        <div className="brandmark">S</div>
-        <div>
-          <strong>Сонграйтер</strong>
-          <span>мини-игра</span>
-        </div>
-        <div className="brandbar__pill">β</div>
-      </header>
-
-      <section className="game-card">
-        {stage === 'ready' && (
-          <div className="screen screen--center">
-            <div className="hero-icon" aria-hidden="true">↶</div>
-            {referralToken && <div className="challenge-badge">😈 Тебе бросили вызов</div>}
-            <p className="eyebrow">ГОЛОСОВОЙ ЧЕЛЛЕНДЖ</p>
-            <h1>Сможешь говорить<br />задом наперёд?</h1>
-            <p className="lead">Запиши фразу, послушай её наоборот и попробуй повторить.</p>
-            <button
-              className="button button--primary"
-              onClick={() => {
-                track('game_started');
-                setStage('permission');
-              }}
-            >
-              🎙 Начать игру
-            </button>
-            <p className="privacy-note">Без регистрации · аудио остаётся на устройстве</p>
-          </div>
-        )}
-
-        {stage === 'permission' && (
-          <div className="screen screen--center">
-            <Progress step={1} />
-            <div className="permission-icon" aria-hidden="true">🎙</div>
-            <h2>Для игры понадобится микрофон</h2>
-            <p className="lead">Записи обрабатываются прямо на твоём устройстве и не сохраняются на сервере.</p>
-            <button className="button button--primary" onClick={() => void requestMicrophone()}>
-              Разрешить микрофон
-            </button>
-            <button className="button button--ghost" onClick={() => setStage('ready')}>Назад</button>
-          </div>
-        )}
-
-        {stage === 'record-original' && (
-          <div className="screen screen--center">
-            <Progress step={1} />
-            <p className="eyebrow">ШАГ 1 ИЗ 3</p>
-            <h2>{isRecording ? 'Говори…' : 'Скажи любую короткую фразу'}</h2>
-            <p className="lead">Лучше 2–6 секунд. Например: «Сегодня я запишу хит».</p>
-            <Waveform active={isRecording} />
-            <button
-              className={isRecording ? 'mic-button mic-button--recording' : 'mic-button'}
-              onClick={() => (isRecording ? stopRecording() : startRecording('original'))}
-              aria-label={isRecording ? 'Остановить запись' : 'Начать запись'}
-            >
-              <span>{isRecording ? '■' : '●'}</span>
-            </button>
-            <strong className="timer">{isRecording ? `${seconds} / 8.0 сек` : 'Нажми и скажи фразу'}</strong>
-          </div>
-        )}
-
-        {stage === 'listen-reversed' && (
-          <div className="screen screen--center">
-            <Progress step={2} />
-            <p className="eyebrow">ШАГ 2 ИЗ 3</p>
-            <h2>А теперь слушай внимательно 👀</h2>
-            <p className="lead">Запомни, как звучит твоя фраза задом наперёд.</p>
-            <div className="audio-orb" aria-hidden="true">◀︎</div>
-            <button
-              className="button button--secondary"
-              disabled={isPlaying || listenCount >= 3}
-              onClick={() => void play(reversedOriginalRef.current, true)}
-            >
-              {isPlaying ? 'Слушаем…' : listenCount >= 3 ? 'Прослушано 3 раза' : '▶ Слушать наоборот'}
-            </button>
-            <p className="counter">Прослушиваний: {listenCount}/3</p>
-            <button className="button button--primary" onClick={() => setStage('record-attempt')}>
-              🎙 Теперь повторить
-            </button>
-          </div>
-        )}
-
-        {stage === 'record-attempt' && (
-          <div className="screen screen--center">
-            <Progress step={3} />
-            <p className="eyebrow">ШАГ 3 ИЗ 3</p>
-            <h2>{isRecording ? 'Повторяй…' : 'Повтори то, что услышал'}</h2>
-            <p className="lead">Постарайся повторить странные звуки максимально похоже.</p>
-            <Waveform active={isRecording} />
-            <button
-              className={isRecording ? 'mic-button mic-button--recording' : 'mic-button'}
-              onClick={() => (isRecording ? stopRecording() : startRecording('attempt'))}
-              aria-label={isRecording ? 'Остановить запись' : 'Начать попытку'}
-            >
-              <span>{isRecording ? '■' : '●'}</span>
-            </button>
-            <strong className="timer">{isRecording ? `${seconds} / 8.0 сек` : 'Готов? Нажимай'}</strong>
-            {!isRecording && (
-              <button className="button button--ghost" onClick={() => setStage('listen-reversed')}>
-                Послушать ещё раз
-              </button>
-            )}
-          </div>
-        )}
-
-        {stage === 'processing' && (
-          <div className="screen screen--center processing-screen">
-            <div className="spinner" aria-hidden="true" />
-            <h2>Проверяем…</h2>
-            <p className="lead">Переворачиваем твою попытку обратно и сравниваем звук.</p>
-          </div>
-        )}
-
-        {stage === 'result' && score && (
-          <div className="screen">
-            <div className="result-head">
-              <p className="eyebrow">ТВОЙ РЕЗУЛЬТАТ</p>
-              <div className="score-ring"><strong>{score.score}%</strong></div>
-              <h2>{scoreLabel(score.score)}</h2>
-              <p className="lead">Сравни, насколько похоже получилось после обратного переворота.</p>
-            </div>
-
-            <div className="listen-grid">
-              <button className="audio-button" disabled={isPlaying} onClick={() => void play(originalRef.current)}>
-                <span>▶</span><div><small>Послушать</small><strong>Оригинал</strong></div>
-              </button>
-              <button className="audio-button" disabled={isPlaying} onClick={() => void play(reconstructedRef.current)}>
-                <span>▶</span><div><small>Послушать</small><strong>Что получилось</strong></div>
-              </button>
-            </div>
-
-            <div className="result-actions">
-              <button className="button button--secondary" onClick={() => void shareResult()}>😈 Бросить вызов другу</button>
-              <button className="button button--ghost" onClick={resetRound}>Сыграть ещё раз</button>
-            </div>
-
-            <div className="easysong-card">
-              <div className="easysong-card__icon">♫</div>
-              <div>
-                <h3>С голосом разобрались</h3>
-                <p>А теперь преврати свою идею в настоящую песню с Сонграйтером.</p>
-              </div>
-              <a className="button button--white" href={easysongHref} onClick={() => track('easysong_clicked')}>
-                Создать свою песню →
-              </a>
-            </div>
-
-            <details className="score-details">
-              <summary>Как считается результат?</summary>
-              <p>Локальный алгоритм сравнивает акустическую структуру, ритм и длительность. Это игровой показатель сходства, а не медицинская или научная оценка речи.</p>
-            </details>
-          </div>
-        )}
-
-        {stage === 'error' && gameError && (
-          <div className="screen screen--center">
-            <div className="error-icon" aria-hidden="true">!</div>
-            <h2>{gameError.title}</h2>
-            <p className="lead">{gameError.message}</p>
-            <button className="button button--primary" onClick={retryAfterError}>Попробовать снова</button>
-            <button className="button button--ghost" onClick={resetRound}>Начать заново</button>
-          </div>
-        )}
-      </section>
-
-      <footer className="footer-note">
-        <span>Аудио не загружается на сервер</span>
-        <span>•</span>
-        <span>{telegram.isTelegram ? 'Telegram Mini App' : 'Web'}</span>
-      </footer>
-    </main>
-  );
+  return <main className="app-shell"><header className="brandbar"><div className="brandmark">S</div><div><strong>Сонграйтер</strong><span>reverse-speech дуэль</span></div><div className="brandbar__pill">2×</div></header><section className="game-card">
+    {stage === 'choose' && <Screen><div className="hero-icon">↶</div><p className="eyebrow">ГОЛОСОВАЯ ДУЭЛЬ</p><h1>Скажи наоборот<br />вдвоём</h1><p className="lead">Один загадывает фразу, второй слышит её наоборот и повторяет. Потом меняетесь ролями.</p><button className="button button--primary" onClick={() => void choose('local')}>📱 Вдвоём на одном устройстве</button><button className="button button--secondary mode-button" onClick={() => void choose('remote')}>🔗 Вдвоём на разных устройствах</button></Screen>}
+    {stage === 'permission' && <Screen><p className="eyebrow">ИГРОК {mode === 'remote' ? player : challenger}</p><h2>Нужен микрофон</h2><p className="lead">Оригинал остаётся на устройстве. Онлайн передаёт только перевёрнутый звук и попытку на 10–30 минут.</p><button className="button button--primary" onClick={() => void mic()}>Разрешить микрофон</button></Screen>}
+    {stage === 'waiting' && <Screen><div className="spinner" /><h2>{match?.status === 'waiting_for_player_2' ? 'Позови Игрока 2' : 'Ждём ход соперника'}</h2>{match?.status === 'waiting_for_player_2' && <><p className="lead">Отправь другу приватную ссылку на комнату.</p><button className="button button--primary" onClick={() => void navigator.clipboard.writeText(inviteUrl)}>Копировать приглашение</button></>}<p className="privacy-note">Оставь вкладку открытой — ход обновится автоматически.</p></Screen>}
+    {stage === 'handoff' && <Screen><div className="permission-icon">📱</div><p className="eyebrow">РАУНД {round} ИЗ 2</p><h2>Передай телефон Игроку {reversed.current ? responder : challenger}</h2><p className="lead">Каждый игрок видит только свой ход.</p><button className="button button--primary" onClick={() => setStage(reversed.current ? 'listen' : 'original')}>Телефон передан</button></Screen>}
+    {stage === 'original' && <Record title={`Игрок ${challenger} загадывает`} subtitle="Слово или короткая фраза, лучше 2–6 секунд." recording={recording} action={() => recording ? stop() : start('original')} />}
+    {stage === 'listen' && <Screen><p className="eyebrow">ИГРОК {responder} СЛУШАЕТ</p><h2>Запомни звук наоборот</h2><p className="lead">Оригинал скрыт. Повтори странные звуки как можно точнее.</p><button className="button button--secondary" disabled={playing} onClick={() => void play()}>▶ Слушать наоборот</button><button className="button button--primary mode-button" onClick={() => setStage('attempt')}>🎙 Повторить</button></Screen>}
+    {stage === 'attempt' && <Record title={`Игрок ${responder} повторяет`} subtitle="Повтори услышанный обратный звук." recording={recording} action={() => recording ? stop() : start('attempt')} />}
+    {stage === 'processing' && <Screen><div className="spinner" /><h2>Сравниваем…</h2><p className="lead">Попытка разворачивается обратно, score считается на устройстве загадчика.</p></Screen>}
+    {stage === 'round-result' && <Screen><p className="eyebrow">РАУНД {round}</p><div className="score-ring"><strong>{scores[responder - 1]}%</strong></div><h2>Результат Игрока {responder}</h2><button className="button button--primary" onClick={nextRound}>{round === 1 ? 'Поменяться ролями' : 'Общий результат'}</button></Screen>}
+    {stage === 'final' && <div className="screen"><div className="result-head"><p className="eyebrow">ДУЭЛЬ ЗАВЕРШЕНА</p><h2>{winner}</h2></div><div className="duel-scores"><div><span>Игрок 1</span><strong>{scores[0]}%</strong></div><div><span>Игрок 2</span><strong>{scores[1]}%</strong></div></div><button className="button button--secondary" onClick={() => void share()}>Поделиться</button><button className="button button--ghost" onClick={reset}>Реванш</button><div className="easysong-card"><div className="easysong-card__icon">♫</div><div><h3>А теперь преврати свою идею в песню</h3><p>Создавай песни, картинки, открытки и не только с Сонграйтером / EasySong.</p></div><a className="button button--white" href={API ? `${API}/go/easysong?source=game&campaign=reverse_duel` : 'https://easysong.ru/webapp/auth?next=%2Fwebapp'} onClick={() => track('easysong_clicked')}>Попробовать EasySong →</a></div></div>}
+    {stage === 'error' && <Screen><div className="error-icon">!</div><h2>Не получилось</h2><p className="lead">{message}</p><button className="button button--primary" onClick={reset}>В начало</button></Screen>}
+  </section><footer className="footer-note"><span>Оригинал не загружается</span><span>•</span><span>{telegram.isTelegram ? 'Telegram Mini App' : 'Web'}</span></footer></main>;
 }
+
+function Screen({ children }: { children: ReactNode }) { return <div className="screen screen--center">{children}</div>; }
+function Record({ title, subtitle, recording, action }: { title: string; subtitle: string; recording: boolean; action: () => void }) { return <Screen><p className="eyebrow">ЗАПИСЬ</p><h2>{recording ? 'Говори…' : title}</h2><p className="lead">{subtitle}</p><div className={recording ? 'waveform waveform--active' : 'waveform'}>{Array.from({ length: 17 }, (_, i) => <span key={i} style={{ '--bar': i } as CSSProperties} />)}</div><button className={recording ? 'mic-button mic-button--recording' : 'mic-button'} onClick={action}><span>{recording ? '■' : '●'}</span></button><strong className="timer">{recording ? 'Нажми, чтобы закончить' : 'До 8 секунд'}</strong></Screen>; }

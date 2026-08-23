@@ -24,4 +24,9 @@ Audio acceptance:
 - reverse twice restores the sample order;
 - identical meaningful signals score near the top;
 - obviously different signals score lower;
-- no audio Blob or PCM is sent to backend endpoints.
+- local mode sends no audio Blob or PCM to backend endpoints;
+- cross-device uploads only reversed challenge and responder attempt through signed URLs; verify original is never uploaded;
+- two browsers complete round 1, swap roles, complete round 2, see the same scores/winner;
+- expired signed URLs fail, scored-round object keys are cleared, and bucket lifecycle is enabled;
+- closing the challenger's tab before scoring produces a clear privacy-related recovery error (the original deliberately is not recoverable from the server);
+- final screen contains rematch, sharing, and the required EasySong marketing copy/CTA.

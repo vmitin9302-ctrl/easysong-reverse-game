@@ -5,6 +5,7 @@
 cloud_id        = "b1gdd8mvsmaacivqjl15"
 folder_id       = "b1gtc579k8imd81bb227"
 web_bucket_name = "<globally-unique-reverse-game-web-bucket>"
+audio_bucket_name = "<private-reverse-game-audio-bucket>"
 
 # Keep these only in a secure local secret manager / protected CI input while bootstrapping.
 db_password             = "<strong-random-password>"

@@ -16,6 +16,36 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type DuelRound = { number: number; challenger: number; responder: number; status: string; score: number | null };
+export type DuelMatch = { id: string; invite_token: string; player: number; status: string; rounds: DuelRound[]; player_token?: string };
+
+function playerRequest<T>(path: string, playerToken: string, init: RequestInit = {}): Promise<T> {
+  return request<T>(path, { ...init, headers: { ...(init.headers || {}), 'X-Player-Token': playerToken } });
+}
+
+export async function createDuelMatch(sessionId: string | null): Promise<DuelMatch> {
+  return request('/v1/matches', { method: 'POST', body: JSON.stringify({ session_id: sessionId }) });
+}
+export async function joinDuelMatch(inviteToken: string): Promise<DuelMatch> {
+  return request(`/v1/matches/join/${encodeURIComponent(inviteToken)}`, { method: 'POST', body: '{}' });
+}
+export async function getDuelMatch(id: string, token: string): Promise<DuelMatch> {
+  return playerRequest(`/v1/matches/${id}`, token);
+}
+export async function uploadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string, blob: Blob): Promise<void> {
+  const result = await playerRequest<{ upload_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-upload`, token, { method: 'POST', body: JSON.stringify({ content_type: blob.type }) });
+  const uploaded = await fetch(result.upload_url, { method: 'PUT', headers: { 'Content-Type': blob.type }, body: blob });
+  if (!uploaded.ok) throw new Error('Audio upload failed');
+  await playerRequest(`/v1/matches/${id}/rounds/${round}/${kind}-ready`, token, { method: 'POST', body: '{}' });
+}
+export async function downloadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string): Promise<Blob> {
+  const result = await playerRequest<{ download_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-audio`, token);
+  const response = await fetch(result.download_url); if (!response.ok) throw new Error('Audio download failed'); return response.blob();
+}
+export async function submitRoundScore(id: string, round: number, token: string, score: ScoreBreakdown): Promise<DuelMatch> {
+  return playerRequest(`/v1/matches/${id}/rounds/${round}/score`, token, { method: 'POST', body: JSON.stringify({ score: score.score, acoustic_similarity: score.acousticSimilarity, rhythm_similarity: score.rhythmSimilarity, duration_similarity: score.durationSimilarity }) });
+}
+
 export async function authenticateTelegram(initData: string): Promise<boolean> {
   if (!hasApi || !initData) return false;
   const result = await request<{ valid: boolean }>('/v1/auth/telegram', {

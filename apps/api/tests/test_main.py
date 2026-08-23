@@ -56,3 +56,17 @@ def test_telegram_auth_reports_not_configured(monkeypatch):
     monkeypatch.setattr(settings, 'telegram_bot_token', None)
     response = client.post('/v1/auth/telegram', json={'init_data': 'auth_date=1&hash=x'})
     assert response.status_code == 503
+
+
+def test_match_requires_persistent_database():
+    response = client.post('/v1/matches', json={'session_id': None})
+    assert response.status_code == 503
+
+
+def test_round_score_validation_rejects_invalid_breakdown():
+    response = client.post(
+        f'/v1/matches/{uuid.uuid4()}/rounds/1/score',
+        headers={'X-Player-Token': 'invalid'},
+        json={'score': 101, 'acoustic_similarity': 1, 'rhythm_similarity': 1, 'duration_similarity': 1},
+    )
+    assert response.status_code == 422
