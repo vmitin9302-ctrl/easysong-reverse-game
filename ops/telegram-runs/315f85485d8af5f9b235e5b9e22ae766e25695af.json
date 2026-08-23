@@ -1,0 +1,14 @@
+{
+  "status": "failed",
+  "commit": "315f85485d8af5f9b235e5b9e22ae766e25695af",
+  "run_id": "32617223108",
+  "steps": {
+    "login": "success",
+    "build_push": "success",
+    "smoke": "success",
+    "deploy_final": "success",
+    "iam": "success",
+    "verify": "failure"
+  },
+  "checked_at": "2026-08-23T04:13:37Z"
+}
