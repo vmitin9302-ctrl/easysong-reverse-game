@@ -124,12 +124,30 @@ def test_started_match_cannot_be_cancelled():
     try:
         with TestClient(app) as database_client:
             created = database_client.post('/v1/matches', json={'session_id': None}).json()
-            database_client.post(f"/v1/matches/join/{created['invite_token']}", json={})
+            joined = database_client.post(f"/v1/matches/join/{created['invite_token']}", json={}).json()
             response = database_client.post(
                 f"/v1/matches/{created['id']}/cancel",
                 headers={'X-Player-Token': created['player_token']},
             )
             assert response.status_code == 409
+
+            forfeited = database_client.post(
+                f"/v1/matches/{created['id']}/forfeit",
+                headers={'X-Player-Token': joined['player_token']},
+            )
+            assert forfeited.status_code == 200
+            assert forfeited.json()['status'] == 'forfeited_by_2'
+            assert forfeited.json()['forfeited_by'] == 2
+
+            creator_view = database_client.get(
+                f"/v1/matches/{created['id']}",
+                headers={'X-Player-Token': created['player_token']},
+            )
+            assert creator_view.json()['forfeited_by'] == 2
+            assert database_client.post(
+                f"/v1/matches/{created['id']}/forfeit",
+                headers={'X-Player-Token': created['player_token']},
+            ).status_code == 409
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(test_engine)

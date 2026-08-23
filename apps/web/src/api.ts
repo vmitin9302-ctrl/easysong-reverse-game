@@ -30,7 +30,7 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 }
 
 export type DuelRound = { number: number; challenger: number; responder: number; status: string; score: number | null };
-export type DuelMatch = { id: string; invite_token: string; player: number; status: string; rounds: DuelRound[]; player_token?: string };
+export type DuelMatch = { id: string; invite_token: string; player: number; status: string; rounds: DuelRound[]; forfeited_by?: number | null; player_token?: string };
 
 function playerRequest<T>(path: string, playerToken: string, init: RequestInit = {}): Promise<T> {
   return request<T>(path, { ...init, headers: { ...(init.headers || {}), 'X-Player-Token': playerToken } });
@@ -47,6 +47,9 @@ export async function getDuelMatch(id: string, token: string): Promise<DuelMatch
 }
 export async function cancelDuelMatch(id: string, token: string): Promise<void> {
   await playerRequest(`/v1/matches/${id}/cancel`, token, { method: 'POST', body: '{}' });
+}
+export async function forfeitDuelMatch(id: string, token: string): Promise<DuelMatch> {
+  return playerRequest(`/v1/matches/${id}/forfeit`, token, { method: 'POST', body: '{}' });
 }
 export async function uploadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string, blob: Blob): Promise<void> {
   const result = await playerRequest<{ upload_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-upload`, token, { method: 'POST', body: JSON.stringify({ content_type: blob.type }) });

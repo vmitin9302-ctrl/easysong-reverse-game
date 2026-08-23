@@ -52,7 +52,35 @@ export function audioBufferToMono(buffer: AudioBuffer): Float32Array {
 }
 
 export async function playAudioBuffer(context: AudioContext, buffer: AudioBuffer): Promise<void> {
-  if (context.state === 'suspended') await context.resume();
+  // HTMLAudio is more reliable than a BufferSource on iOS Safari: it keeps the
+  // user gesture that started playback and routes sound to the media speaker.
+  if (typeof Audio !== 'undefined' && typeof URL !== 'undefined') {
+    const url = URL.createObjectURL(audioBufferToWav(buffer));
+    const audio = new Audio(url);
+    audio.preload = 'auto';
+    audio.volume = 1;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          if (error) reject(error); else resolve();
+        };
+        const timeout = window.setTimeout(() => finish(new Error('Audio playback timed out')), 15_000);
+        audio.addEventListener('ended', () => finish(), { once: true });
+        audio.addEventListener('error', () => finish(new Error('Audio playback failed')), { once: true });
+        audio.play()?.catch(() => finish(new Error('Audio playback was blocked')));
+      });
+      return;
+    } finally {
+      audio.pause();
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  if (context.state !== 'running') await context.resume();
 
   await new Promise<void>((resolve, reject) => {
     try {
@@ -65,6 +93,12 @@ export async function playAudioBuffer(context: AudioContext, buffer: AudioBuffer
       reject(error);
     }
   });
+}
+
+export function normalizedGameAudio(context: AudioContext, samples: Float32Array, sampleRate: number): AudioBuffer {
+  const output = context.createBuffer(1, samples.length, sampleRate);
+  output.getChannelData(0).set(samples);
+  return output;
 }
 
 export function audioBufferToWav(buffer: AudioBuffer): Blob {

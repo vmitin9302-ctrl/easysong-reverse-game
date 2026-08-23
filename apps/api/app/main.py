@@ -100,8 +100,10 @@ def match_player(match: DuelMatch, token: str | None) -> int:
 
 def match_view(db: Session, match: DuelMatch, player: int) -> dict:
     rounds = db.query(DuelRound).filter(DuelRound.match_id == match.id).order_by(DuelRound.round_number).all()
+    forfeited_by = int(match.status.rsplit('_', 1)[-1]) if match.status.startswith('forfeited_by_') else None
     return {
         'id': str(match.id), 'invite_token': match.invite_token, 'player': player, 'status': match.status,
+        'forfeited_by': forfeited_by,
         'rounds': [
             {'number': row.round_number, 'challenger': row.challenger, 'responder': row.responder,
              'status': row.status, 'score': row.score, 'audio_expires_at': row.audio_expires_at}
@@ -169,6 +171,30 @@ def cancel_match(match_id: uuid.UUID, x_player_token: str | None = Header(None),
     match.finished_at = datetime.now(UTC)
     db.commit()
     return {'cancelled': True}
+
+
+@app.post('/v1/matches/{match_id}/forfeit')
+def forfeit_match(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db)
+    match = db.get(DuelMatch, match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail='Match not found')
+    player = match_player(match, x_player_token)
+    if match.status not in ('round_1', 'round_2') or not match.player_two_secret:
+        raise HTTPException(status_code=409, detail='Only an active match can be forfeited')
+    rounds = db.query(DuelRound).filter(DuelRound.match_id == match.id).all()
+    keys = [key for row in rounds for key in (row.challenge_object_key, row.attempt_object_key) if key]
+    for row in rounds:
+        row.challenge_object_key = None
+        row.attempt_object_key = None
+    match.status = f'forfeited_by_{player}'
+    match.finished_at = datetime.now(UTC)
+    db.commit()
+    try:
+        delete_objects(keys)
+    except Exception:
+        pass
+    return match_view(db, match, player)
 
 
 @app.get('/v1/matches/{match_id}')
