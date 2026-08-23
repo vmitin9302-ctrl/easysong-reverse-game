@@ -30,3 +30,13 @@ Audio acceptance:
 - expired signed URLs fail, scored-round object keys are cleared, and bucket lifecycle is enabled;
 - closing the challenger's tab before scoring produces a clear privacy-related recovery error (the original deliberately is not recoverable from the server);
 - final screen contains rematch, sharing, and the required EasySong marketing copy/CTA.
+
+Cross-device state acceptance:
+
+- while player 1 is recording, reviewing, replaying or uploading a challenge, polling an older `awaiting_challenge` snapshot must not return the UI to microphone permission;
+- while player 2 is preparing, recording or uploading an attempt, polling `awaiting_attempt` must not return the UI to the listen screen;
+- a challenge is downloaded once per round and stays playable until the attempt is submitted;
+- scoring starts once even when several polling ticks observe `awaiting_score`;
+- after refresh, the saved player token is available to the first audio download before React state finishes rendering;
+- returning from the system share sheet or a backgrounded mobile browser triggers an immediate match refresh;
+- cancel and forfeit are serialized against join/another forfeit, and a terminal state always overrides a locally locked audio step.

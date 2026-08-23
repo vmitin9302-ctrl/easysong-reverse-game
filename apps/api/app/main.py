@@ -160,7 +160,7 @@ def join_match(invite_token: str, db: Session | None = Depends(get_db)) -> dict:
 @app.post('/v1/matches/{match_id}/cancel')
 def cancel_match(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
     db = require_database(db)
-    match = db.get(DuelMatch, match_id)
+    match = db.query(DuelMatch).filter(DuelMatch.id == match_id).with_for_update().one_or_none()
     if match is None:
         raise HTTPException(status_code=404, detail='Match not found')
     if match_player(match, x_player_token) != 1:
@@ -176,7 +176,7 @@ def cancel_match(match_id: uuid.UUID, x_player_token: str | None = Header(None),
 @app.post('/v1/matches/{match_id}/forfeit')
 def forfeit_match(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
     db = require_database(db)
-    match = db.get(DuelMatch, match_id)
+    match = db.query(DuelMatch).filter(DuelMatch.id == match_id).with_for_update().one_or_none()
     if match is None:
         raise HTTPException(status_code=404, detail='Match not found')
     player = match_player(match, x_player_token)
