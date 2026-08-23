@@ -3,12 +3,6 @@ name: Telegram GitHub Poller
 # Temporary autonomous fallback until the Yandex API Gateway role is granted.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '*/5 * * * *'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/telegram-github-poller.yml'
 
 permissions:
   contents: write
