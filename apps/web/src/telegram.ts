@@ -35,7 +35,7 @@ export function initTelegram(): { isTelegram: boolean; initData: string; startPa
   validateInitDataOnServer(initData);
 
   return {
-    isTelegram: true,
+    isTelegram: Boolean(initData),
     initData,
     startParam: webApp.initDataUnsafe?.start_param,
   };
