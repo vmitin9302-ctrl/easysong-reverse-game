@@ -8,6 +8,7 @@ Automated gate:
 - Production web build.
 - Python dependency installation.
 - Python compile check for API and Telegram bot.
+- `node ops/qa-production-duel.mjs` for a bounded production smoke test of both rounds, private audio transfer/deletion, cancellation and forfeit.
 
 Manual device QA before public launch:
 
