@@ -1,12 +1,12 @@
 import asyncio
-import json
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from typing import Any
-from urllib.error import URLError
-from urllib.request import Request as URLRequest, urlopen
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from aiogram import Bot, Dispatcher
+from aiogram.filters import CommandStart
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
+from fastapi import FastAPI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,152 +15,121 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str | None = None
     telegram_webapp_url: str = 'http://localhost:5173'
-    telegram_webhook_url: str | None = None
-    telegram_webhook_secret: str | None = None
 
 
 settings = Settings()
-webhook_requests = 0
-invalid_secret_requests = 0
+dp = Dispatcher()
+bot: Bot | None = None
+polling_task: asyncio.Task[Any] | None = None
+polling_started_at: str | None = None
 start_requests = 0
-duplicate_start_requests = 0
-last_update_id: int | None = None
 last_start_at: str | None = None
-processed_update_ids: set[int] = set()
+
+
+START_TEXT = (
+    '😈 Думаешь, тебя легко запутать?\n\n'
+    'Проверь себя в челлендже «Наоборот».\n\n'
+    'Скажи обычную фразу → услышь её задом наперёд → '
+    'попробуй повторить этот звук. А потом посмотрим, насколько близко ты попал 👀\n\n'
+    'Спойлер: с первого раза получается далеко не у всех 😏\n\n'
+    '🎁 А когда закончишь, я покажу тебе сервис, где можно создавать '
+    'песни, картинки, открытки и не только.\n\n'
+    'Ну что, проверим тебя? 👇'
+)
 
 
 def build_start_response(chat_id: int) -> dict[str, Any]:
     return {
         'method': 'sendMessage',
         'chat_id': chat_id,
-        'text': (
-            '😈 Думаешь, тебя легко запутать?\n\n'
-            'Проверь себя в челлендже «Наоборот».\n\n'
-            'Скажи обычную фразу → услышь её задом наперёд → '
-            'попробуй повторить этот звук. А потом посмотрим, насколько близко ты попал 👀\n\n'
-            'Спойлер: с первого раза получается далеко не у всех 😏\n\n'
-            '🎁 А когда закончишь, я покажу тебе сервис, где можно создавать '
-            'песни, картинки, открытки и не только.\n\n'
-            'Ну что, проверим тебя? 👇'
-        ),
+        'text': START_TEXT,
         'reply_markup': {
-            'inline_keyboard': [
-                [
-                    {
-                        'text': '🎮 Проверить себя',
-                        'web_app': {'url': settings.telegram_webapp_url},
-                    }
-                ]
-            ]
+            'inline_keyboard': [[{
+                'text': '🎮 Проверить себя',
+                'web_app': {'url': settings.telegram_webapp_url},
+            }]],
         },
     }
 
 
+@dp.message(CommandStart())
+async def start(message: Message) -> None:
+    global start_requests, last_start_at
 
-def send_start_message(chat_id: int) -> None:
-    payload = build_start_response(chat_id)
-    payload.pop('method', None)
-    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-    api_request = URLRequest(
-        f'https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage',
-        data=body,
-        headers={'Content-Type': 'application/json'},
-        method='POST',
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text='🎮 Проверить себя',
+                web_app=WebAppInfo(url=settings.telegram_webapp_url),
+            )
+        ]]
     )
-    try:
-        with urlopen(api_request, timeout=10) as response:
-            result = json.loads(response.read().decode('utf-8'))
-    except (URLError, TimeoutError, ValueError) as exc:
-        raise RuntimeError(f'Telegram sendMessage failed: {exc}') from exc
-    if result.get('ok') is not True:
-        raise RuntimeError(f'Telegram sendMessage rejected: {result}')
+    await message.answer(START_TEXT, reply_markup=keyboard)
+    start_requests += 1
+    last_start_at = datetime.now(timezone.utc).isoformat()
 
-app = FastAPI(title='EasySong Reverse Game Telegram Bot')
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global bot, polling_task, polling_started_at
+
+    if settings.telegram_bot_token:
+        bot = Bot(settings.telegram_bot_token)
+
+        # Railway keeps the service alive, so long polling is both faster and
+        # simpler than relying on an inbound webhook. Remove any old Yandex
+        # webhook while preserving queued Telegram updates.
+        await bot.delete_webhook(drop_pending_updates=False)
+
+        polling_started_at = datetime.now(timezone.utc).isoformat()
+        polling_task = asyncio.create_task(
+            dp.start_polling(
+                bot,
+                allowed_updates=dp.resolve_used_update_types(),
+                handle_signals=False,
+                close_bot_session=False,
+            )
+        )
+
+    yield
+
+    if polling_task is not None:
+        polling_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await polling_task
+        polling_task = None
+
+    if bot is not None:
+        await bot.session.close()
+        bot = None
+
+
+app = FastAPI(title='EasySong Reverse Game Telegram Bot', lifespan=lifespan)
 
 
 @app.get('/health')
 async def health() -> dict[str, Any]:
+    task_running = polling_task is not None and not polling_task.done()
     return {
-        'status': 'ok',
+        'status': 'ok' if settings.telegram_bot_token and task_running else 'degraded',
         'configured': bool(settings.telegram_bot_token),
-        'webhook_url': settings.telegram_webhook_url,
-        'registration_mode': 'external-github',
-        'delivery_mode': 'outbound-bot-api',
-        'webhook_requests': webhook_requests,
-        'invalid_secret_requests': invalid_secret_requests,
+        'delivery_mode': 'railway-long-polling',
+        'polling': task_running,
+        'polling_started_at': polling_started_at,
         'start_requests': start_requests,
-        'duplicate_start_requests': duplicate_start_requests,
-        'last_update_id': last_update_id,
         'last_start_at': last_start_at,
+        'webapp_url': settings.telegram_webapp_url,
     }
 
 
 @app.get('/telegram/status')
 async def telegram_status() -> dict[str, Any]:
-    # No outbound Telegram API calls are made from the Serverless Container.
-    # Direct Bot API diagnostics are performed from GitHub Actions instead.
+    task_running = polling_task is not None and not polling_task.done()
     return {
-        'configured_webhook_url': settings.telegram_webhook_url,
-        'registration_mode': 'external-github',
-        'delivery_mode': 'outbound-bot-api',
-        'webhook_requests': webhook_requests,
+        'mode': 'railway-long-polling',
+        'configured': bool(settings.telegram_bot_token),
+        'polling': task_running,
+        'polling_started_at': polling_started_at,
         'start_requests': start_requests,
-        'last_update_id': last_update_id,
         'last_start_at': last_start_at,
     }
-
-
-@app.post('/telegram/webhook')
-async def telegram_webhook(request: Request) -> JSONResponse:
-    global webhook_requests, invalid_secret_requests, start_requests
-    global duplicate_start_requests, last_update_id, last_start_at
-
-    webhook_requests += 1
-
-    if not settings.telegram_bot_token:
-        raise HTTPException(status_code=503, detail='Telegram bot is not configured')
-
-    if settings.telegram_webhook_secret:
-        received = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
-        if received != settings.telegram_webhook_secret:
-            invalid_secret_requests += 1
-            print('telegram_webhook invalid_secret', flush=True)
-            raise HTTPException(status_code=401, detail='Invalid webhook secret')
-
-    payload = await request.json()
-    update_id = payload.get('update_id')
-    if isinstance(update_id, int):
-        last_update_id = update_id
-
-    message = payload.get('message') or {}
-    text = message.get('text')
-    chat = message.get('chat') or {}
-    chat_id = chat.get('id')
-
-    print(
-        f'telegram_webhook update_id={update_id!r} text={text!r} chat_present={chat_id is not None}',
-        flush=True,
-    )
-
-    if isinstance(text, str) and text.split(maxsplit=1)[0].split('@', 1)[0] == '/start' and isinstance(chat_id, int):
-        if isinstance(update_id, int) and update_id in processed_update_ids:
-            duplicate_start_requests += 1
-            print(f'telegram_webhook duplicate_start update_id={update_id!r}', flush=True)
-            return JSONResponse(content={'ok': True})
-
-        try:
-            await asyncio.to_thread(send_start_message, chat_id)
-        except RuntimeError as exc:
-            print(f'telegram_webhook send_failed update_id={update_id!r} error={exc}', flush=True)
-            raise HTTPException(status_code=502, detail='Telegram sendMessage failed') from exc
-
-        if isinstance(update_id, int):
-            if len(processed_update_ids) >= 1000:
-                processed_update_ids.clear()
-            processed_update_ids.add(update_id)
-        start_requests += 1
-        last_start_at = datetime.now(timezone.utc).isoformat()
-        print(f'telegram_webhook start_sent update_id={update_id!r}', flush=True)
-        return JSONResponse(content={'ok': True})
-
-    return JSONResponse(content={'ok': True})
