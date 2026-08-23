@@ -1,6 +1,9 @@
+import asyncio
+import json
 from datetime import datetime, timezone
-from time import monotonic
 from typing import Any
+from urllib.error import URLError
+from urllib.request import Request as URLRequest, urlopen
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -23,7 +26,7 @@ start_requests = 0
 duplicate_start_requests = 0
 last_update_id: int | None = None
 last_start_at: str | None = None
-recent_start_chats: dict[int, float] = {}
+processed_update_ids: set[int] = set()
 
 
 def build_start_response(chat_id: int) -> dict[str, Any]:
@@ -48,6 +51,25 @@ def build_start_response(chat_id: int) -> dict[str, Any]:
     }
 
 
+
+def send_start_message(chat_id: int) -> None:
+    payload = build_start_response(chat_id)
+    payload.pop('method', None)
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    api_request = URLRequest(
+        f'https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage',
+        data=body,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urlopen(api_request, timeout=10) as response:
+            result = json.loads(response.read().decode('utf-8'))
+    except (URLError, TimeoutError, ValueError) as exc:
+        raise RuntimeError(f'Telegram sendMessage failed: {exc}') from exc
+    if result.get('ok') is not True:
+        raise RuntimeError(f'Telegram sendMessage rejected: {result}')
+
 app = FastAPI(title='EasySong Reverse Game Telegram Bot')
 
 
@@ -58,7 +80,7 @@ async def health() -> dict[str, Any]:
         'configured': bool(settings.telegram_bot_token),
         'webhook_url': settings.telegram_webhook_url,
         'registration_mode': 'external-github',
-        'delivery_mode': 'direct-json-webhook-response',
+        'delivery_mode': 'outbound-bot-api',
         'webhook_requests': webhook_requests,
         'invalid_secret_requests': invalid_secret_requests,
         'start_requests': start_requests,
@@ -75,7 +97,7 @@ async def telegram_status() -> dict[str, Any]:
     return {
         'configured_webhook_url': settings.telegram_webhook_url,
         'registration_mode': 'external-github',
-        'delivery_mode': 'direct-json-webhook-response',
+        'delivery_mode': 'outbound-bot-api',
         'webhook_requests': webhook_requests,
         'start_requests': start_requests,
         'last_update_id': last_update_id,
@@ -116,18 +138,24 @@ async def telegram_webhook(request: Request) -> JSONResponse:
     )
 
     if isinstance(text, str) and text.split(maxsplit=1)[0].split('@', 1)[0] == '/start' and isinstance(chat_id, int):
-        now = monotonic()
-        previous = recent_start_chats.get(chat_id)
-        recent_start_chats[chat_id] = now
-
-        if previous is not None and now - previous < 30:
+        if isinstance(update_id, int) and update_id in processed_update_ids:
             duplicate_start_requests += 1
             print(f'telegram_webhook duplicate_start update_id={update_id!r}', flush=True)
             return JSONResponse(content={'ok': True})
 
+        try:
+            await asyncio.to_thread(send_start_message, chat_id)
+        except RuntimeError as exc:
+            print(f'telegram_webhook send_failed update_id={update_id!r} error={exc}', flush=True)
+            raise HTTPException(status_code=502, detail='Telegram sendMessage failed') from exc
+
+        if isinstance(update_id, int):
+            if len(processed_update_ids) >= 1000:
+                processed_update_ids.clear()
+            processed_update_ids.add(update_id)
         start_requests += 1
         last_start_at = datetime.now(timezone.utc).isoformat()
-        print(f'telegram_webhook start_response update_id={update_id!r}', flush=True)
-        return JSONResponse(content=build_start_response(chat_id))
+        print(f'telegram_webhook start_sent update_id={update_id!r}', flush=True)
+        return JSONResponse(content={'ok': True})
 
     return JSONResponse(content={'ok': True})
