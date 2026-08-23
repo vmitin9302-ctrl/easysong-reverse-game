@@ -5,7 +5,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'apps/**'
+      - 'apps/api/**'
+      - 'apps/web/**'
       - 'packages/**'
       - 'package.json'
       - 'tsconfig.base.json'
@@ -30,9 +31,7 @@ env:
   YC_WEB_BUCKET: ${{ vars.YC_WEB_BUCKET || 'easygame7-d81bb227-42b6a9' }}
   PUBLIC_WEB_URL: ${{ vars.PUBLIC_WEB_URL || 'https://easygame7-d81bb227-42b6a9.website.yandexcloud.net' }}
   OIDC_FEDERATION_ID: ${{ vars.OIDC_FEDERATION_ID || 'aje27hoijg3b8gdehibd' }}
-  BOT_CONTAINER_ID: bba5hgbd8seu96ko81bu
   API_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID || 'crp5evltachnf8imjg32' }}/reverse-game-api:${{ github.sha }}
-  BOT_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID || 'crp5evltachnf8imjg32' }}/reverse-game-bot:${{ github.sha }}
 
 jobs:
   configuration:
@@ -59,13 +58,12 @@ jobs:
           done
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
 
-  containers:
+  api:
     needs: configuration
     if: needs.configuration.outputs.ready == 'true'
     runs-on: ubuntu-latest
     outputs:
       api_id: ${{ steps.deploy-api.outputs.id }}
-      bot_id: ${{ steps.deploy-bot.outputs.id }}
       web_url: ${{ steps.urls.outputs.web_url }}
     steps:
       - uses: actions/checkout@v4
@@ -83,14 +81,8 @@ jobs:
       - name: Build API image
         run: docker build -f apps/api/Dockerfile -t "$API_IMAGE" .
 
-      - name: Build Telegram bot image
-        run: docker build -f apps/telegram-bot/Dockerfile -t "$BOT_IMAGE" .
-
       - name: Push API image
         run: docker push "$API_IMAGE"
-
-      - name: Push Telegram bot image
-        run: docker push "$BOT_IMAGE"
 
       - name: Deploy API Serverless Container
         id: deploy-api
@@ -118,32 +110,8 @@ jobs:
             SESSION_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/SESSION_SECRET
             TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
 
-      - name: Deploy Telegram bot with final webhook configuration
-        id: deploy-bot
-        uses: yc-actions/yc-sls-container-deploy@v5
-        with:
-          yc-sa-id: ${{ env.YC_SA_ID }}
-          folder-id: ${{ env.YC_FOLDER_ID }}
-          container-name: reverse-game-bot
-          public: true
-          revision-service-account-id: ${{ env.YC_RUNTIME_SA_ID }}
-          revision-cores: 1
-          revision-memory: 256Mb
-          revision-core-fraction: 100
-          revision-concurrency: 8
-          revision-image-url: ${{ env.BOT_IMAGE }}
-          revision-execution-timeout: 60
-          revision-log-options-log-group-id: ${{ env.YC_LOG_GROUP_ID }}
-          revision-log-options-min-level: info
-          revision-env: |
-            TELEGRAM_WEBAPP_URL=${{ steps.urls.outputs.web_url }}
-            TELEGRAM_WEBHOOK_URL=https://${{ env.BOT_CONTAINER_ID }}.containers.yandexcloud.net/telegram/webhook
-          revision-secrets: |
-            TELEGRAM_BOT_TOKEN=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_BOT_TOKEN
-            TELEGRAM_WEBHOOK_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/TELEGRAM_WEBHOOK_SECRET
-
   web:
-    needs: [configuration, containers]
+    needs: [configuration, api]
     if: needs.configuration.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -158,7 +126,7 @@ jobs:
         run: |
           api_url='${{ vars.PUBLIC_API_URL }}'
           if [ -z "$api_url" ]; then
-            api_url='https://${{ needs.containers.outputs.api_id }}.containers.yandexcloud.net'
+            api_url='https://${{ needs.api.outputs.api_id }}.containers.yandexcloud.net'
           fi
           VITE_API_BASE_URL="$api_url" \
           VITE_EASYSONG_URL='https://easysong.ru/webapp/auth?next=%2Fwebapp' \
@@ -180,48 +148,19 @@ jobs:
             *.html: no-cache
             *: no-cache
 
-  configure-telegram:
-    needs: [configuration, containers, web]
+  summary:
+    needs: [configuration, api, web]
     if: needs.configuration.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Warm bot container and verify final webhook revision
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          bot_url="https://${BOT_CONTAINER_ID}.containers.yandexcloud.net"
-          expected="$bot_url/telegram/webhook"
-          matched=false
-
-          for attempt in $(seq 1 36); do
-            if curl --fail --silent --show-error --max-time 25 "$bot_url/health" >/tmp/bot-health.json; then
-              jq . /tmp/bot-health.json
-              configured="$(jq -r '.configured' /tmp/bot-health.json)"
-              registered="$(jq -r '.webhook_registered' /tmp/bot-health.json)"
-              actual="$(jq -r '.webhook_url' /tmp/bot-health.json)"
-              delivery="$(jq -r '.delivery_mode' /tmp/bot-health.json)"
-              if [ "$configured" = true ] && \
-                 [ "$registered" = true ] && \
-                 [ "$actual" = "$expected" ] && \
-                 [ "$delivery" = 'direct-json-webhook-response' ]; then
-                matched=true
-                break
-              fi
-            fi
-            sleep 5
-          done
-
-          test "$matched" = true
-          echo 'Telegram webhook is registered and the final revision is active.'
-
       - name: Deployment summary
         shell: bash
         run: |
           api_url='${{ vars.PUBLIC_API_URL }}'
           if [ -z "$api_url" ]; then
-            api_url='https://${{ needs.containers.outputs.api_id }}.containers.yandexcloud.net'
+            api_url='https://${{ needs.api.outputs.api_id }}.containers.yandexcloud.net'
           fi
           echo "### Reverse Game production" >> "$GITHUB_STEP_SUMMARY"
           echo "Web: $PUBLIC_WEB_URL" >> "$GITHUB_STEP_SUMMARY"
           echo "API: $api_url" >> "$GITHUB_STEP_SUMMARY"
-          echo "Telegram webhook: https://${BOT_CONTAINER_ID}.containers.yandexcloud.net/telegram/webhook" >> "$GITHUB_STEP_SUMMARY"
+          echo "Telegram: Railway long polling (managed outside Yandex deploy)" >> "$GITHUB_STEP_SUMMARY"
