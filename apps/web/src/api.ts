@@ -45,6 +45,9 @@ export async function joinDuelMatch(inviteToken: string): Promise<DuelMatch> {
 export async function getDuelMatch(id: string, token: string): Promise<DuelMatch> {
   return playerRequest(`/v1/matches/${id}`, token);
 }
+export async function cancelDuelMatch(id: string, token: string): Promise<void> {
+  await playerRequest(`/v1/matches/${id}/cancel`, token, { method: 'POST', body: '{}' });
+}
 export async function uploadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string, blob: Blob): Promise<void> {
   const result = await playerRequest<{ upload_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-upload`, token, { method: 'POST', body: JSON.stringify({ content_type: blob.type }) });
   const uploaded = await fetch(result.upload_url, { method: 'PUT', headers: { 'Content-Type': blob.type }, body: blob });

@@ -1,7 +1,11 @@
 import uuid
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app.db import Base, get_db
 from app.main import app
 from app.settings import settings
 
@@ -70,3 +74,63 @@ def test_round_score_validation_rejects_invalid_breakdown():
         json={'score': 101, 'acoustic_similarity': 1, 'rhythm_similarity': 1, 'duration_similarity': 1},
     )
     assert response.status_code == 422
+
+
+def test_waiting_match_can_be_cancelled_only_by_creator():
+    test_engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+    session_factory = sessionmaker(bind=test_engine)
+    Base.metadata.create_all(test_engine)
+
+    def override_database():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_database
+    try:
+        with TestClient(app) as database_client:
+            created = database_client.post('/v1/matches', json={'session_id': None}).json()
+            match_id, invite, creator_token = created['id'], created['invite_token'], created['player_token']
+
+            denied = database_client.post(f'/v1/matches/{match_id}/cancel', headers={'X-Player-Token': 'wrong'})
+            assert denied.status_code == 403
+
+            cancelled = database_client.post(f'/v1/matches/{match_id}/cancel', headers={'X-Player-Token': creator_token})
+            assert cancelled.status_code == 200
+            assert cancelled.json() == {'cancelled': True}
+
+            assert database_client.post(f'/v1/matches/join/{invite}', json={}).status_code == 410
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(test_engine)
+        test_engine.dispose()
+
+
+def test_started_match_cannot_be_cancelled():
+    test_engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+    session_factory = sessionmaker(bind=test_engine)
+    Base.metadata.create_all(test_engine)
+
+    def override_database():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_database
+    try:
+        with TestClient(app) as database_client:
+            created = database_client.post('/v1/matches', json={'session_id': None}).json()
+            database_client.post(f"/v1/matches/join/{created['invite_token']}", json={})
+            response = database_client.post(
+                f"/v1/matches/{created['id']}/cancel",
+                headers={'X-Player-Token': created['player_token']},
+            )
+            assert response.status_code == 409
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(test_engine)
+        test_engine.dispose()

@@ -145,12 +145,30 @@ def join_match(invite_token: str, db: Session | None = Depends(get_db)) -> dict:
     match = db.query(DuelMatch).filter(DuelMatch.invite_token == invite_token).with_for_update().one_or_none()
     if match is None:
         raise HTTPException(status_code=404, detail='Match not found')
+    if match.status == 'cancelled':
+        raise HTTPException(status_code=410, detail='Match was cancelled')
     if match.player_two_secret:
         raise HTTPException(status_code=409, detail='Match already has two players')
     match.player_two_secret = secrets.token_urlsafe(32)
     match.status = 'round_1'
     db.commit()
     return {**match_view(db, match, 2), 'player_token': match.player_two_secret}
+
+
+@app.post('/v1/matches/{match_id}/cancel')
+def cancel_match(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db)
+    match = db.get(DuelMatch, match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail='Match not found')
+    if match_player(match, x_player_token) != 1:
+        raise HTTPException(status_code=403, detail='Only player one can cancel the match')
+    if match.status != 'waiting_for_player_2' or match.player_two_secret:
+        raise HTTPException(status_code=409, detail='A started match cannot be cancelled')
+    match.status = 'cancelled'
+    match.finished_at = datetime.now(UTC)
+    db.commit()
+    return {'cancelled': True}
 
 
 @app.get('/v1/matches/{match_id}')
