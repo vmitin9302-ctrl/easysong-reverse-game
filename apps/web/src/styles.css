@@ -244,6 +244,15 @@ h2 {
 .duel-scores > div { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 10px; border-radius: 22px; background: #f4f1fc; color: #77727f; }
 .duel-scores strong { color: #6746df; font-size: 34px; }
 
+.recording-replay { margin: 0 0 20px; padding: 16px; border-radius: 20px; background: #faf8ff; text-align: left; }
+.recording-replay h3 { margin: 0 0 12px; text-align: center; }
+.recording-replay__player { padding: 10px 0; border-top: 1px solid #ebe6f8; }
+.recording-replay__player > strong { display: block; margin-bottom: 8px; color: #5f5968; }
+.recording-replay__player > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.recording-replay button { min-height: 42px; padding: 8px; border: 0; border-radius: 12px; color: #6244d8; background: #eee9ff; cursor: pointer; font: inherit; font-size: 13px; font-weight: 800; }
+.recording-replay button:disabled { cursor: default; opacity: .45; }
+.recording-replay p { margin: 10px 0 0; color: #9a94a2; font-size: 11px; text-align: center; }
+
 .button--ghost {
   margin-top: 9px;
   color: #77727f;

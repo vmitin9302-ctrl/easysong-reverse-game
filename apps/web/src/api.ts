@@ -5,15 +5,28 @@ const baseUrl = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || ''
 export const hasApi = Boolean(baseUrl);
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init.headers || {}),
-    },
-  });
-  if (!response.ok) throw new Error(`API ${response.status}`);
-  return response.json() as Promise<T>;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15_000);
+  const abort = () => controller.abort();
+  init.signal?.addEventListener('abort', abort, { once: true });
+  try {
+    const response = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init.headers || {}),
+      },
+    });
+    if (!response.ok) throw new Error(`API ${response.status}`);
+    return response.json() as Promise<T>;
+  } catch (error) {
+    if (controller.signal.aborted && !init.signal?.aborted) throw new Error('API timeout');
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+    init.signal?.removeEventListener('abort', abort);
+  }
 }
 
 export type DuelRound = { number: number; challenger: number; responder: number; status: string; score: number | null };
