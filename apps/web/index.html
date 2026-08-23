@@ -6,7 +6,9 @@
     <meta name="theme-color" content="#7B5CF5" />
     <meta name="description" content="Скажи фразу, услышь её наоборот и попробуй повторить." />
     <title>Скажи наоборот — игра от Сонграйтера</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- Telegram may be slow or blocked by a mobile provider. Never let its
+         optional SDK delay the game UI in Safari, Chrome or an in-app browser. -->
+    <script async src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
     <div id="root"></div>

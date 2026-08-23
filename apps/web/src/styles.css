@@ -276,6 +276,9 @@ h2 {
   margin: 16px 0 0;
 }
 
+.invite-link { display: block; max-width: 100%; margin: 14px auto 0; overflow: hidden; color: #766d80; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.invite-notice { margin: 9px 0 0; color: #6244d8; font-size: 12px; }
+
 .progress {
   display: flex;
   gap: 7px;

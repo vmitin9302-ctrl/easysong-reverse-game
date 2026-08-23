@@ -17,7 +17,7 @@ export default function App() {
   const [mode, setMode] = useState<Mode | null>(null), [stage, setStage] = useState<Stage>('choose');
   const [round, setRound] = useState(1), [scores, setScores] = useState<(number | null)[]>([null, null]);
   const [sessionId, setSessionId] = useState<string | null>(null), [match, setMatch] = useState<DuelMatch | null>(null);
-  const [token, setToken] = useState(''), [message, setMessage] = useState(''), [recording, setRecording] = useState(false), [playing, setPlaying] = useState(false);
+  const [token, setToken] = useState(''), [message, setMessage] = useState(''), [inviteNotice, setInviteNotice] = useState(''), [recording, setRecording] = useState(false), [playing, setPlaying] = useState(false);
   const ctx = useRef<AudioContext | null>(null), stream = useRef<MediaStream | null>(null), recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<BlobPart[]>([]), originals = useRef<(AudioBuffer | null)[]>([null, null]), attempts = useRef<(AudioBuffer | null)[]>([null, null]), reversed = useRef<AudioBuffer | null>(null), remoteAudio = useRef<AudioBuffer | null>(null);
   const challenger = round, responder = round === 1 ? 2 : 1, player = match?.player ?? 1;
@@ -37,8 +37,12 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (!match || !token || match.status === 'finished') return;
-    const timer = window.setInterval(() => void getDuelMatch(match.id, token).then(sync).catch(() => undefined), 2000);
-    return () => window.clearInterval(timer);
+    const refresh = () => void getDuelMatch(match.id, token).then(sync).catch(() => undefined);
+    const refreshWhenVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    const timer = window.setInterval(refresh, 2000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refreshWhenVisible); };
   }, [match?.id, match?.status, token]);
 
   function context() { return ctx.current ??= createAudioContext(); }
@@ -113,16 +117,18 @@ export default function App() {
   }
   async function play() { const audio = mode === 'remote' ? remoteAudio.current : reversed.current; if (!audio || playing) return; setPlaying(true); await playAudioBuffer(context(), audio); setPlaying(false); track('reverse_audio_played'); }
   async function playSaved(kind: 'original' | 'attempt', playerNumber: number) { const audio = (kind === 'original' ? originals : attempts).current[playerNumber - 1]; if (!audio || playing) return; setPlaying(true); try { await playAudioBuffer(context(), audio); track('final_recording_played', { kind, player: playerNumber }); } finally { setPlaying(false); } }
+  async function copyInvite() { try { await navigator.clipboard.writeText(inviteUrl); setInviteNotice('Ссылка скопирована. Отправь её второму игроку.'); track('invite_copied'); } catch { setInviteNotice('Не удалось скопировать автоматически. Нажми и удерживай ссылку ниже.'); } }
+  async function shareInvite() { if (!inviteUrl) return; try { if (navigator.share) { await navigator.share({ title: 'Скажи наоборот — дуэль', text: 'Присоединяйся к моей голосовой дуэли', url: inviteUrl }); track('invite_shared'); return; } await copyInvite(); } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) await copyInvite(); } }
   async function cancelRoom() { if (!match || !token || !window.confirm('Отменить комнату? Ссылка перестанет работать.')) return; try { await cancelDuelMatch(match.id, token); track('match_cancelled'); reset(); } catch { try { sync(await getDuelMatch(match.id, token)); } catch { fail('Не удалось отменить комнату. Попробуй ещё раз.'); } } }
   function nextRound() { if (round === 1) { setRound(2); reversed.current = null; setStage('handoff'); } else setStage('final'); }
-  function reset() { forgetRemote(); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setMatch(null); originals.current = [null, null]; attempts.current = [null, null]; }
+  function reset() { forgetRemote(); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setMatch(null); setInviteNotice(''); originals.current = [null, null]; attempts.current = [null, null]; }
   async function share() { const text = `Дуэль «Скажи наоборот»: Игрок 1 — ${scores[0]}%, Игрок 2 — ${scores[1]}%.`; if (navigator.share) await navigator.share({ title: 'Скажи наоборот', text, url: location.href.split('?')[0] }); else { await navigator.clipboard.writeText(text); alert('Результат скопирован'); } }
   const winner = scores[0] === scores[1] ? 'Ничья 🤝' : `Победитель — Игрок ${scores[0]! > scores[1]! ? 1 : 2} 🏆`;
 
   return <main className="app-shell"><header className="brandbar"><div className="brandmark">S</div><div><strong>Сонграйтер</strong><span>reverse-speech дуэль</span></div><div className="brandbar__pill">2×</div></header><section className="game-card">
     {stage === 'choose' && <Screen><div className="hero-icon">↶</div><p className="eyebrow">ГОЛОСОВАЯ ДУЭЛЬ</p><h1>Скажи наоборот<br />вдвоём</h1><p className="lead">Один загадывает фразу, второй слышит её наоборот и повторяет. Потом меняетесь ролями.</p><button className="button button--primary" onClick={() => void choose('local')}>📱 Вдвоём на одном устройстве</button><button className="button button--secondary mode-button" onClick={() => void choose('remote')}>🔗 Вдвоём на разных устройствах</button></Screen>}
     {stage === 'permission' && <Screen><p className="eyebrow">ИГРОК {mode === 'remote' ? player : challenger}</p><h2>Нужен микрофон</h2><p className="lead">Оригинал остаётся на устройстве. Онлайн передаёт только перевёрнутый звук и попытку на 10–30 минут.</p><button className="button button--primary" onClick={() => void mic()}>Разрешить микрофон</button></Screen>}
-    {stage === 'waiting' && <Screen><div className="spinner" /><h2>{waitingTitle}</h2>{match?.status === 'waiting_for_player_2' ? <><p className="lead">Отправь другу приватную ссылку на комнату.</p><button className="button button--primary" onClick={() => void navigator.clipboard.writeText(inviteUrl)}>Копировать приглашение</button><button className="button button--ghost" onClick={() => void cancelRoom()}>Отменить комнату</button></> : <p className="lead">Ты уже подключён. Экран сам переключится, когда соперник закончит свой ход.</p>}<p className="privacy-note">Оставь вкладку открытой — ход обновится автоматически.</p></Screen>}
+    {stage === 'waiting' && <Screen><div className="spinner" /><h2>{waitingTitle}</h2>{match?.status === 'waiting_for_player_2' ? <><p className="lead">Отправь другу приватную ссылку на комнату.</p><button className="button button--primary" onClick={() => void shareInvite()}>Поделиться приглашением</button><button className="button button--secondary mode-button" onClick={() => void copyInvite()}>Копировать ссылку</button><a className="invite-link" href={inviteUrl}>{inviteUrl}</a>{inviteNotice && <p className="invite-notice">{inviteNotice}</p>}<button className="button button--ghost" onClick={() => void cancelRoom()}>Отменить комнату</button></> : <p className="lead">Ты уже подключён. Экран сам переключится, когда соперник закончит свой ход.</p>}<p className="privacy-note">Можно свернуть игру: после возвращения ход обновится сразу.</p></Screen>}
     {stage === 'handoff' && <Screen><div className="permission-icon">📱</div><p className="eyebrow">РАУНД {round} ИЗ 2</p><h2>Передай телефон Игроку {reversed.current ? responder : challenger}</h2><p className="lead">Каждый игрок видит только свой ход.</p><button className="button button--primary" onClick={() => setStage(reversed.current ? 'listen' : 'original')}>Телефон передан</button></Screen>}
     {stage === 'original' && <Record title={`Игрок ${challenger} загадывает`} subtitle="Слово или короткая фраза, лучше 2–6 секунд." recording={recording} action={() => recording ? stop() : start('original')} />}
     {stage === 'listen' && <Screen><p className="eyebrow">ИГРОК {responder} СЛУШАЕТ</p><h2>Запомни звук наоборот</h2><p className="lead">Оригинал скрыт. Повтори странные звуки как можно точнее.</p><button className="button button--secondary" disabled={playing} onClick={() => void play()}>▶ Слушать наоборот</button><button className="button button--primary mode-button" onClick={() => setStage('attempt')}>🎙 Повторить</button></Screen>}
