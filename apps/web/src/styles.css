@@ -588,8 +588,6 @@ h2 {
   font-size: 13px;
 }
 
-.rematch-notice { color: #6f4cf0; font-weight: 700; text-align: center; }
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

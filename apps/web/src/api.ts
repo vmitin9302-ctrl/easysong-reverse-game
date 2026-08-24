@@ -71,9 +71,6 @@ export async function cancelDuelMatch(id: string, token: string): Promise<void> 
 export async function forfeitDuelMatch(id: string, token: string): Promise<DuelMatch> {
   return playerRequest(`/v1/matches/${id}/forfeit`, token, { method: 'POST', body: '{}' });
 }
-export async function requestDuelRematch(id: string, token: string): Promise<DuelMatch> {
-  return playerRequest(`/v1/matches/${id}/rematch`, token, { method: 'POST', body: '{}' });
-}
 export async function heartbeatDuelMatch(id: string, token: string): Promise<void> {
   await playerRequest(`/v1/matches/${id}/heartbeat`, token, { method: 'POST', body: '{}' });
 }

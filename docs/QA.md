@@ -30,7 +30,7 @@ Audio acceptance:
 - two browsers complete round 1, swap roles, complete round 2, see the same scores/winner;
 - expired signed URLs fail, scored-round object keys are cleared, and bucket lifecycle is enabled;
 - closing the challenger's tab before scoring produces a clear privacy-related recovery error (the original deliberately is not recoverable from the server);
-- final screen contains rematch, sharing, and the required EasySong marketing copy/CTA.
+- final screen lets either player exit independently, and contains sharing plus the required EasySong marketing copy/CTA.
 
 Cross-device state acceptance:
 
@@ -53,7 +53,7 @@ Cross-platform matrix (run every row in both player-slot directions):
 - Telegram Mini App creates → another Telegram client opens invite;
 - ordinary browser creates → another ordinary browser/device opens invite.
 
-For every row verify live activity, 5-second heartbeat, 15-second reconnect indication, refresh/resume on both slots, identical player-mapped scores/winner, synchronized rematch, and the EasySong CTA only after the terminal result. The room identity is the participant token and never depends on Telegram `initData`.
+For every row verify live activity, 5-second heartbeat, 15-second reconnect indication, refresh/resume on both slots, identical player-mapped scores/winner, independent exit for either player after the terminal result, and the EasySong CTA only after that result. The room identity is the participant token and never depends on Telegram `initData`.
 
 Infrastructure acceptance:
 
