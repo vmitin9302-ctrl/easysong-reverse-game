@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,7 +15,8 @@ class Settings(BaseSettings):
     s3_bucket: str | None = None
     s3_access_key_id: str | None = None
     s3_secret_access_key: str | None = None
-    audio_ttl_seconds: int = 1200
+    audio_ttl_seconds: int = Field(default=1200, ge=60, le=86_400)
+    invite_ttl_seconds: int = Field(default=1800, ge=300, le=86_400)
 
 
 settings = Settings()

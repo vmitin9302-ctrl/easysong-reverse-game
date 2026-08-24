@@ -179,15 +179,12 @@ resource "yandex_lockbox_secret_version_hashed" "app" {
   key_3        = "TELEGRAM_BOT_TOKEN"
   text_value_3 = var.telegram_bot_token
 
-  key_4        = "TELEGRAM_WEBHOOK_SECRET"
-  text_value_4 = var.telegram_webhook_secret
+  key_4        = "S3_BUCKET"
+  text_value_4 = var.audio_bucket_name
 
-  key_5        = "S3_BUCKET"
-  text_value_5 = var.audio_bucket_name
+  key_5        = "S3_ACCESS_KEY_ID"
+  text_value_5 = yandex_iam_service_account_static_access_key.audio_storage.access_key
 
-  key_6        = "S3_ACCESS_KEY_ID"
-  text_value_6 = yandex_iam_service_account_static_access_key.audio_storage.access_key
-
-  key_7        = "S3_SECRET_ACCESS_KEY"
-  text_value_7 = yandex_iam_service_account_static_access_key.audio_storage.secret_key
+  key_6        = "S3_SECRET_ACCESS_KEY"
+  text_value_6 = yandex_iam_service_account_static_access_key.audio_storage.secret_key
 }

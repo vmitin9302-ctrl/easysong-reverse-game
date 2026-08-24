@@ -89,7 +89,6 @@ if [[ ! -f "$VARS_FILE" ]]; then
 
   DB_PASSWORD="$(openssl rand -hex 24)"
   SESSION_SECRET="$(openssl rand -hex 32)"
-  WEBHOOK_SECRET="$(openssl rand -hex 32)"
   BUCKET_SUFFIX="$(openssl rand -hex 3)"
   WEB_BUCKET="easygame7-${FOLDER_ID: -8}-${BUCKET_SUFFIX}"
   AUDIO_BUCKET="easygame7-audio-${FOLDER_ID: -8}-${BUCKET_SUFFIX}"
@@ -103,12 +102,14 @@ audio_bucket_name        = "${AUDIO_BUCKET}"
 db_password              = "${DB_PASSWORD}"
 session_secret           = "${SESSION_SECRET}"
 telegram_bot_token       = "${TELEGRAM_BOT_TOKEN}"
-telegram_webhook_secret  = "${WEBHOOK_SECRET}"
 EOF
-  unset TELEGRAM_BOT_TOKEN DB_PASSWORD SESSION_SECRET WEBHOOK_SECRET
+  unset TELEGRAM_BOT_TOKEN DB_PASSWORD SESSION_SECRET
 else
   say "Existing private bootstrap secrets found; reusing them for an idempotent retry"
 fi
+
+# Older bootstrap runs stored an unused Yandex Telegram webhook input.
+sed -i '/^[[:space:]]*telegram_webhook_secret[[:space:]]*=/d' "$VARS_FILE"
 
 if ! grep -q '^[[:space:]]*audio_bucket_name[[:space:]]*=' "$VARS_FILE"; then
   BUCKET_SUFFIX="$(openssl rand -hex 3)"
@@ -183,8 +184,22 @@ ensure_audio_bucket() {
       --tags project=reverse-game,purpose=temporary-duel-audio,managed_by=bootstrap \
       >/dev/null
   fi
+  local website_origin="https://${WEB_BUCKET}.website.yandexcloud.net"
+  local configured_origin="${PUBLIC_WEB_URL:-$website_origin}"
+  configured_origin="${configured_origin%/}"
+  [[ "$configured_origin" =~ ^https://[^/]+$ ]] || fail "PUBLIC_WEB_URL must be an HTTPS origin without a path."
+  local allowed_origins="[${website_origin}]"
+  if [[ "$configured_origin" != "$website_origin" ]]; then
+    allowed_origins="[${website_origin},${configured_origin}]"
+  fi
+  yc storage bucket update \
+    --name "$AUDIO_BUCKET" \
+    --folder-id "$FOLDER_ID" \
+    --cors allowed-methods='[method-get,method-put,method-head]',allowed-origins="${allowed_origins}",allowed-headers='[content-type]',expose-headers='[etag]',max-age-seconds=600 \
+    --lifecycle-rules-from-file "${REPO_DIR}/infra/audio-lifecycle.json" \
+    >/dev/null
   yc storage bucket get --name "$AUDIO_BUCKET" --folder-id "$FOLDER_ID" >/dev/null
-  printf 'Private temporary-audio bucket ready: %s\n' "$AUDIO_BUCKET"
+  printf 'Private temporary-audio bucket ready with CORS and lifecycle cleanup: %s\n' "$AUDIO_BUCKET"
 }
 
 ensure_audio_bucket

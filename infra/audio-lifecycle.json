@@ -1,0 +1,14 @@
+{
+  "lifecycleRules": [
+    {
+      "id": "delete-temporary-duel-audio",
+      "enabled": true,
+      "filter": {
+        "prefix": "matches/"
+      },
+      "expiration": {
+        "days": "1"
+      }
+    }
+  ]
+}

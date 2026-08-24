@@ -41,3 +41,24 @@ Cross-device state acceptance:
 - after refresh, the saved player token is available to the first audio download before React state finishes rendering;
 - returning from the system share sheet or a backgrounded mobile browser triggers an immediate match refresh;
 - cancel and forfeit are serialized against join/another forfeit, and a terminal state always overrides a locally locked audio step.
+- refresh the challenger after sending a challenge; the private IndexedDB original must restore locally when scoring starts;
+- repeat join with the same participant token and confirm the same slot is returned; a third token must receive `409`;
+- verify the permanent status bar changes between online, reconnecting and restored and that activity changes appear on the waiting device within roughly 1–2 seconds;
+- retry identical upload/ready/score calls and confirm no extra object or round transition is created.
+
+Cross-platform matrix (run every row in both player-slot directions):
+
+- Telegram Mini App creates → Chrome/Safari opens invite;
+- Chrome/Safari creates → Telegram in-app browser opens invite;
+- Telegram Mini App creates → another Telegram client opens invite;
+- ordinary browser creates → another ordinary browser/device opens invite.
+
+For every row verify live activity, 5-second heartbeat, 15-second reconnect indication, refresh/resume on both slots, identical player-mapped scores/winner, synchronized rematch, and the EasySong CTA only after the terminal result. The room identity is the participant token and never depends on Telegram `initData`.
+
+Infrastructure acceptance:
+
+- API startup applies pending PostgreSQL migrations once under advisory lock;
+- audio bucket remains private and exposes only signed object URLs;
+- bucket CORS allows the production game origin to use `GET`, `PUT`, and `HEAD` with `Content-Type`;
+- lifecycle removes any orphaned `matches/` object after one day, while normal score/forfeit cleanup happens immediately;
+- Yandex deploy workflow does not deploy a Telegram webhook/poller and reports Railway long polling in its summary.

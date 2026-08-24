@@ -30,7 +30,27 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 }
 
 export type DuelRound = { number: number; challenger: number; responder: number; status: string; score: number | null };
-export type DuelMatch = { id: string; invite_token: string; player: number; status: string; rounds: DuelRound[]; forfeited_by?: number | null; player_token?: string };
+export type DuelMatch = { id: string; invite_token: string; player: number; status: string; rounds: DuelRound[]; forfeited_by?: number | null; player_token?: string; current_round: number; active_player: number; revision: number; updated_at: string; activity_status: string; activity_player: number | null; activity_updated_at: string | null; player_one_last_seen_at: string | null; player_two_last_seen_at: string | null; invite_expires_at: string | null; rematch_requested_by: number | null; scores: [number | null, number | null]; winner: number | null };
+
+const memoryIdempotencyKeys = new Map<string, string>();
+
+function idempotencyKey(storageKey: string): string {
+  try {
+    const saved = sessionStorage.getItem(storageKey);
+    if (saved) return saved;
+  } catch { /* Restricted WebViews may disable sessionStorage. */ }
+  const generated = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  memoryIdempotencyKeys.set(storageKey, generated);
+  try { sessionStorage.setItem(storageKey, generated); } catch { /* Keep the in-memory fallback. */ }
+  return generated;
+}
+
+function forgetIdempotencyKey(storageKey: string): void {
+  memoryIdempotencyKeys.delete(storageKey);
+  try { sessionStorage.removeItem(storageKey); } catch { /* Nothing else to clean. */ }
+}
 
 function playerRequest<T>(path: string, playerToken: string, init: RequestInit = {}): Promise<T> {
   return request<T>(path, { ...init, headers: { ...(init.headers || {}), 'X-Player-Token': playerToken } });
@@ -39,8 +59,8 @@ function playerRequest<T>(path: string, playerToken: string, init: RequestInit =
 export async function createDuelMatch(sessionId: string | null): Promise<DuelMatch> {
   return request('/v1/matches', { method: 'POST', body: JSON.stringify({ session_id: sessionId }) });
 }
-export async function joinDuelMatch(inviteToken: string): Promise<DuelMatch> {
-  return request(`/v1/matches/join/${encodeURIComponent(inviteToken)}`, { method: 'POST', body: '{}' });
+export async function joinDuelMatch(inviteToken: string, participantToken?: string): Promise<DuelMatch> {
+  return request(`/v1/matches/join/${encodeURIComponent(inviteToken)}`, { method: 'POST', body: JSON.stringify({ participant_token: participantToken || null }) });
 }
 export async function getDuelMatch(id: string, token: string): Promise<DuelMatch> {
   return playerRequest(`/v1/matches/${id}`, token);
@@ -51,11 +71,23 @@ export async function cancelDuelMatch(id: string, token: string): Promise<void> 
 export async function forfeitDuelMatch(id: string, token: string): Promise<DuelMatch> {
   return playerRequest(`/v1/matches/${id}/forfeit`, token, { method: 'POST', body: '{}' });
 }
+export async function requestDuelRematch(id: string, token: string): Promise<DuelMatch> {
+  return playerRequest(`/v1/matches/${id}/rematch`, token, { method: 'POST', body: '{}' });
+}
+export async function heartbeatDuelMatch(id: string, token: string): Promise<void> {
+  await playerRequest(`/v1/matches/${id}/heartbeat`, token, { method: 'POST', body: '{}' });
+}
+export async function updateDuelActivity(id: string, token: string, status: string): Promise<void> {
+  await playerRequest(`/v1/matches/${id}/activity`, token, { method: 'POST', body: JSON.stringify({ status }) });
+}
 export async function uploadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string, blob: Blob): Promise<void> {
-  const result = await playerRequest<{ upload_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-upload`, token, { method: 'POST', body: JSON.stringify({ content_type: blob.type }) });
+  const storageKey = `reverse_duel_idem_${id}_${round}_${kind}`;
+  const requestKey = memoryIdempotencyKeys.get(storageKey) || idempotencyKey(storageKey);
+  const result = await playerRequest<{ upload_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-upload`, token, { method: 'POST', body: JSON.stringify({ content_type: blob.type, idempotency_key: requestKey }) });
   const uploaded = await fetch(result.upload_url, { method: 'PUT', headers: { 'Content-Type': blob.type }, body: blob });
   if (!uploaded.ok) throw new Error('Audio upload failed');
   await playerRequest(`/v1/matches/${id}/rounds/${round}/${kind}-ready`, token, { method: 'POST', body: '{}' });
+  forgetIdempotencyKey(storageKey);
 }
 export async function downloadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string): Promise<Blob> {
   const result = await playerRequest<{ download_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-audio`, token);

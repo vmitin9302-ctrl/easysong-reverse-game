@@ -34,6 +34,30 @@ env:
   API_IMAGE: cr.yandex/${{ vars.YC_REGISTRY_ID || 'crp5evltachnf8imjg32' }}/reverse-game-api:${{ github.sha }}
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/api/requirements-dev.txt
+      - run: pip install -r apps/api/requirements-dev.txt -r apps/telegram-bot/requirements.txt
+      - run: PYTHONPATH=apps/api pytest apps/api/tests -q
+      - run: PYTHONPATH=apps/telegram-bot pytest apps/telegram-bot/tests -q
+      - run: python -m compileall -q apps/api/app apps/api/tests apps/telegram-bot
+      - run: bash -n infra/bootstrap-yandex-cloud-shell.sh
+      - run: node --check ops/qa-production-duel.mjs
+
   configuration:
     runs-on: ubuntu-latest
     outputs:
@@ -59,7 +83,7 @@ jobs:
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
 
   api:
-    needs: configuration
+    needs: [configuration, quality]
     if: needs.configuration.outputs.ready == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -108,6 +132,7 @@ jobs:
             S3_ENDPOINT_URL=https://storage.yandexcloud.net
             S3_REGION=ru-central1
             AUDIO_TTL_SECONDS=1200
+            INVITE_TTL_SECONDS=1800
           revision-secrets: |
             DATABASE_URL=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/DATABASE_URL
             SESSION_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/SESSION_SECRET
@@ -125,7 +150,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+      - run: npm ci
 
       - name: Resolve public API URL and build production web app
         shell: bash
@@ -154,8 +179,31 @@ jobs:
             *.html: no-cache
             *: no-cache
 
-  summary:
+  qa:
     needs: [configuration, api, web]
+    if: needs.configuration.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run production duel smoke test
+        shell: bash
+        env:
+          PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+          DEPLOYED_API_ID: ${{ needs.api.outputs.api_id }}
+        run: |
+          web_html="$(curl --fail --silent --show-error --retry 8 --retry-delay 3 "$PUBLIC_WEB_URL")"
+          grep -q 'id="root"' <<< "$web_html"
+          api_url="$PUBLIC_API_URL"
+          if [ -z "$api_url" ]; then
+            api_url="https://${DEPLOYED_API_ID}.containers.yandexcloud.net"
+          fi
+          QA_API_URL="$api_url" node ops/qa-production-duel.mjs
+
+  summary:
+    needs: [configuration, api, web, qa]
     if: needs.configuration.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:

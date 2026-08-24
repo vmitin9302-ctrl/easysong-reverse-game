@@ -1,12 +1,15 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app import main as main_module
 from app.db import Base, get_db
 from app.main import app
+from app.models import DuelMatch, DuelRound
 from app.settings import settings
 
 
@@ -148,6 +151,245 @@ def test_started_match_cannot_be_cancelled():
                 f"/v1/matches/{created['id']}/forfeit",
                 headers={'X-Player-Token': created['player_token']},
             ).status_code == 409
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(test_engine)
+        test_engine.dispose()
+
+
+def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
+    test_engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+    session_factory = sessionmaker(bind=test_engine)
+    Base.metadata.create_all(test_engine)
+
+    def override_database():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_database
+    try:
+        with TestClient(app) as database_client:
+            created = database_client.post('/v1/matches', json={'session_id': None}).json()
+            joined = database_client.post(f"/v1/matches/join/{created['invite_token']}", json={}).json()
+            assert joined['player'] == 2
+            assert joined['current_round'] == 1
+            assert joined['active_player'] == 1
+            assert joined['revision'] > created['revision']
+
+            resumed = database_client.post(
+                f"/v1/matches/join/{created['invite_token']}",
+                json={'participant_token': joined['player_token']},
+            )
+            assert resumed.status_code == 200
+            assert resumed.json()['player'] == 2
+            assert resumed.json()['player_token'] == joined['player_token']
+
+            third = database_client.post(f"/v1/matches/join/{created['invite_token']}", json={})
+            assert third.status_code == 409
+
+            activity = database_client.post(
+                f"/v1/matches/{created['id']}/activity",
+                headers={'X-Player-Token': created['player_token']},
+                json={'status': 'recording_challenge'},
+            )
+            assert activity.status_code == 200
+            state = database_client.get(
+                f"/v1/matches/{created['id']}",
+                headers={'X-Player-Token': joined['player_token']},
+            ).json()
+            assert state['activity_status'] == 'recording_challenge'
+            assert state['activity_player'] == 1
+            assert state['revision'] == activity.json()['revision']
+
+            not_active = database_client.post(
+                f"/v1/matches/{created['id']}/activity",
+                headers={'X-Player-Token': joined['player_token']},
+                json={'status': 'recording_attempt'},
+            )
+            assert not_active.status_code == 409
+
+            wrong_phase = database_client.post(
+                f"/v1/matches/{created['id']}/activity",
+                headers={'X-Player-Token': created['player_token']},
+                json={'status': 'recording_attempt'},
+            )
+            assert wrong_phase.status_code == 409
+
+            heartbeat = database_client.post(
+                f"/v1/matches/{created['id']}/heartbeat",
+                headers={'X-Player-Token': joined['player_token']},
+                json={},
+            )
+            assert heartbeat.status_code == 200
+            refreshed = database_client.get(
+                f"/v1/matches/{created['id']}",
+                headers={'X-Player-Token': created['player_token']},
+            ).json()
+            assert refreshed['player_two_last_seen_at'] is not None
+
+            monkeypatch.setattr(main_module, 'signed_put', lambda key, content_type: f'https://upload.invalid/{key}')
+            monkeypatch.setattr(main_module, 'signed_get', lambda key: f'https://download.invalid/{key}')
+            challenge_path = f"/v1/matches/{created['id']}/rounds/1/challenge-upload"
+            upload_body = {'content_type': 'audio/wav', 'idempotency_key': 'challenge-request-1'}
+            first_upload = database_client.post(
+                challenge_path,
+                headers={'X-Player-Token': created['player_token']},
+                json=upload_body,
+            )
+            duplicate_upload = database_client.post(
+                challenge_path,
+                headers={'X-Player-Token': created['player_token']},
+                json={**upload_body, 'idempotency_key': 'challenge-request-2'},
+            )
+            assert first_upload.status_code == 200
+            assert duplicate_upload.json()['upload_url'] == first_upload.json()['upload_url']
+
+            assert database_client.post(
+                f"/v1/matches/{created['id']}/rounds/1/challenge-ready",
+                headers={'X-Player-Token': created['player_token']},
+            ).status_code == 200
+            assert database_client.post(
+                challenge_path,
+                headers={'X-Player-Token': created['player_token']},
+                json=upload_body,
+            ).status_code == 409
+            assert database_client.get(
+                f"/v1/matches/{created['id']}/rounds/1/challenge-audio",
+                headers={'X-Player-Token': joined['player_token']},
+            ).status_code == 200
+
+            attempt_path = f"/v1/matches/{created['id']}/rounds/1/attempt-upload"
+            assert database_client.post(
+                attempt_path,
+                headers={'X-Player-Token': joined['player_token']},
+                json={'content_type': 'audio/wav', 'idempotency_key': 'attempt-request-1'},
+            ).status_code == 200
+            assert database_client.post(
+                f"/v1/matches/{created['id']}/rounds/1/attempt-ready",
+                headers={'X-Player-Token': joined['player_token']},
+            ).status_code == 200
+            assert database_client.post(
+                attempt_path,
+                headers={'X-Player-Token': joined['player_token']},
+                json={'content_type': 'audio/wav', 'idempotency_key': 'attempt-request-2'},
+            ).status_code == 409
+            assert database_client.get(
+                f"/v1/matches/{created['id']}/rounds/1/attempt-audio",
+                headers={'X-Player-Token': created['player_token']},
+            ).status_code == 200
+
+            assert database_client.post(
+                f"/v1/matches/{created['id']}/forfeit",
+                headers={'X-Player-Token': joined['player_token']},
+            ).status_code == 200
+            assert database_client.get(
+                f"/v1/matches/{created['id']}/rounds/1/attempt-audio",
+                headers={'X-Player-Token': created['player_token']},
+            ).status_code == 409
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(test_engine)
+        test_engine.dispose()
+
+
+def test_scores_winner_and_rematch_are_synchronized_by_player():
+    test_engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+    session_factory = sessionmaker(bind=test_engine)
+    Base.metadata.create_all(test_engine)
+
+    def override_database():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_database
+    try:
+        with TestClient(app) as database_client:
+            created = database_client.post('/v1/matches', json={'session_id': None}).json()
+            joined = database_client.post(f"/v1/matches/join/{created['invite_token']}", json={}).json()
+            with session_factory() as db:
+                match = db.get(DuelMatch, uuid.UUID(created['id']))
+                rounds = db.query(DuelRound).filter(DuelRound.match_id == match.id).order_by(DuelRound.round_number).all()
+                rounds[0].status = 'complete'; rounds[0].score = 81
+                rounds[1].status = 'complete'; rounds[1].score = 85
+                match.status = 'finished'; match.current_round = 2; match.active_player = 2
+                match.finished_at = datetime.now(UTC); match.revision += 1
+                db.commit()
+
+            final = database_client.get(
+                f"/v1/matches/{created['id']}",
+                headers={'X-Player-Token': created['player_token']},
+            ).json()
+            assert final['scores'] == [85, 81]
+            assert final['winner'] == 1
+
+            proposed = database_client.post(
+                f"/v1/matches/{created['id']}/rematch",
+                headers={'X-Player-Token': created['player_token']},
+                json={},
+            ).json()
+            assert proposed['status'] == 'finished'
+            assert proposed['rematch_requested_by'] == 1
+
+            repeated = database_client.post(
+                f"/v1/matches/{created['id']}/rematch",
+                headers={'X-Player-Token': created['player_token']},
+                json={},
+            ).json()
+            assert repeated['revision'] == proposed['revision']
+
+            accepted = database_client.post(
+                f"/v1/matches/{created['id']}/rematch",
+                headers={'X-Player-Token': joined['player_token']},
+                json={},
+            ).json()
+            assert accepted['status'] == 'round_1'
+            assert accepted['current_round'] == 1
+            assert accepted['active_player'] == 1
+            assert accepted['scores'] == [None, None]
+            assert accepted['winner'] is None
+            assert accepted['activity_status'] == 'rematch_started'
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(test_engine)
+        test_engine.dispose()
+
+
+def test_expired_invite_rejects_new_player_but_allows_creator_resume():
+    test_engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+    session_factory = sessionmaker(bind=test_engine)
+    Base.metadata.create_all(test_engine)
+
+    def override_database():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_database
+    try:
+        with TestClient(app) as database_client:
+            created = database_client.post('/v1/matches', json={'session_id': None}).json()
+            with session_factory() as db:
+                match = db.get(DuelMatch, uuid.UUID(created['id']))
+                match.invite_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                db.commit()
+
+            expired = database_client.post(f"/v1/matches/join/{created['invite_token']}", json={})
+            assert expired.status_code == 410
+
+            resumed = database_client.post(
+                f"/v1/matches/join/{created['invite_token']}",
+                json={'participant_token': created['player_token']},
+            )
+            assert resumed.status_code == 200
+            assert resumed.json()['player'] == 1
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(test_engine)

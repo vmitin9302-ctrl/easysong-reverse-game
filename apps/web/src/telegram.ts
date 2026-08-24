@@ -26,17 +26,22 @@ function validateInitDataOnServer(initData: string) {
 
 export function initTelegram(): { isTelegram: boolean; initData: string; startParam?: string } {
   const webApp = window.Telegram?.WebApp;
-  if (!webApp) return { isTelegram: false, initData: '' };
+  const launch = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const fallbackInitData = launch.get('tgWebAppData') ?? '';
+  const isTelegramLaunch = Boolean(webApp || fallbackInitData || launch.get('tgWebAppVersion'));
+  if (!isTelegramLaunch) return { isTelegram: false, initData: '' };
 
-  webApp.ready?.();
-  webApp.expand?.();
+  webApp?.ready?.();
+  webApp?.expand?.();
 
-  const initData = webApp.initData ?? '';
+  const initData = webApp?.initData || fallbackInitData;
   validateInitDataOnServer(initData);
 
+  const initParams = new URLSearchParams(initData);
+
   return {
-    isTelegram: Boolean(initData),
+    isTelegram: true,
     initData,
-    startParam: webApp.initDataUnsafe?.start_param,
+    startParam: webApp?.initDataUnsafe?.start_param || initParams.get('start_param') || undefined,
   };
 }

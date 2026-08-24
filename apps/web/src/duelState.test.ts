@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { DuelMatch, DuelRound } from './api';
 import { remoteTurnAction } from './duelState';
+import { liveActivityText } from './App';
 
 function match(status: string, activeStatus: string, challenger = 1, responder = 2): DuelMatch {
   const rounds: DuelRound[] = [
     { number: 1, challenger, responder, status: activeStatus, score: null },
     { number: 2, challenger: 2, responder: 1, status: 'awaiting_challenge', score: null },
   ];
-  return { id: 'match', invite_token: 'invite', player: 1, status, rounds };
+  return { id: 'match', invite_token: 'invite', player: 1, status, rounds, current_round: 1, active_player: challenger, revision: 1, updated_at: '', activity_status: 'opponent_joined', activity_player: null, activity_updated_at: null, player_one_last_seen_at: null, player_two_last_seen_at: null, invite_expires_at: null, rematch_requested_by: null, scores: [null, null], winner: null };
 }
 
 describe('remoteTurnAction', () => {
@@ -67,5 +68,18 @@ describe('remoteTurnAction', () => {
       loadedChallengeRound: 1,
     });
     expect(decision.action).toBe('final');
+  });
+});
+
+describe('liveActivityText', () => {
+  it('describes browser and Telegram players symmetrically from the viewer perspective', () => {
+    const state = { ...match('round_1', 'awaiting_challenge'), activity_status: 'recording_challenge', activity_player: 1 };
+    expect(liveActivityText(state, 1)).toContain('Ты записываешь');
+    expect(liveActivityText(state, 2)).toContain('Соперник записывает');
+  });
+
+  it('announces the turn after the challenge becomes ready', () => {
+    const state = { ...match('round_1', 'awaiting_attempt'), active_player: 2, activity_status: 'challenge_ready', activity_player: 1 };
+    expect(liveActivityText(state, 2)).toContain('Теперь твоя очередь');
   });
 });

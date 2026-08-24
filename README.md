@@ -47,7 +47,9 @@ uvicorn apps.api.app.main:app --reload --port 8000
 3. Устройство загадчика скачивает попытку, локально разворачивает и сравнивает с оригиналом. API получает только score и breakdown.
 4. После score API удаляет оба объекта. Bucket должен иметь lifecycle-правило удаления объектов с префиксом `matches/` максимум через сутки как аварийную страховку; подписанные URL и metadata истекают через `AUDIO_TTL_SECONDS` (по умолчанию 20 минут).
 
-Object Storage обязан быть приватным: без website hosting и public ACL. Для runtime задаются `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`. Для production примените `apps/api/migrations/001_duel_matches.sql`; `create_all` остаётся удобством для пустого стенда.
+Object Storage обязан быть приватным: без website hosting и public ACL. Для runtime задаются `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`. PostgreSQL-миграции из `apps/api/migrations` применяются при старте API под advisory lock и записываются в `schema_migrations`; их также можно последовательно применить вручную. `create_all` остаётся удобством для пустого стенда.
+
+Cross-device матч использует backend как единственный источник игрового состояния. Клиенты опрашивают state раз в секунду и применяют versioned snapshots по `revision`; heartbeat идёт раз в 5 секунд. Participant token хранится локально и позволяет занять прежний slot после refresh/reconnect. Activity statuses влияют только на live UX и не могут выполнять игровые переходы. Локальный оригинал остаётся в памяти/IndexedDB браузера загадчика и удаляется после score или выхода; на API он не отправляется.
 
 Telegram-бот развёрнут отдельно на Railway в режиме long polling. Дуэльный релиз не меняет его runtime и не возвращает webhook/function в Yandex Cloud; сайт, API, PostgreSQL и временный bucket остаются в Yandex Cloud.
 

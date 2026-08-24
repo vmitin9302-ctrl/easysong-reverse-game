@@ -90,9 +90,3 @@ variable "telegram_bot_token" {
   type        = string
   sensitive   = true
 }
-
-variable "telegram_webhook_secret" {
-  description = "High-entropy Telegram webhook secret token."
-  type        = string
-  sensitive   = true
-}

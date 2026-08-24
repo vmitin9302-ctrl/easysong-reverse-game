@@ -562,6 +562,34 @@ h2 {
   }
 }
 
+.connection-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 4px 10px;
+  padding: 9px 13px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #625d6b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.connection-bar--reconnecting { background: #fff7d8; color: #7b6416; }
+.connection-bar--restored { background: #e9faef; color: #287044; }
+
+.round-score-banner {
+  margin: 0 4px 10px;
+  padding: 9px 13px;
+  border-radius: 14px;
+  background: rgba(111, 76, 240, 0.1);
+  color: #5f46bc;
+  text-align: center;
+  font-size: 13px;
+}
+
+.rematch-notice { color: #6f4cf0; font-weight: 700; text-align: center; }
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

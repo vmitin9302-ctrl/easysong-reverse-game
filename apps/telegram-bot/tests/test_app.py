@@ -1,7 +1,7 @@
 from app import build_start_response
 
 
-def test_start_returns_direct_webhook_send_message() -> None:
+def test_start_button_opens_the_configured_cross_platform_web_app() -> None:
     payload = build_start_response(123456)
 
     assert payload['method'] == 'sendMessage'
