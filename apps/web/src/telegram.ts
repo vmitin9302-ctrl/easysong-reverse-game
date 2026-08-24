@@ -28,7 +28,7 @@ export function initTelegram(): { isTelegram: boolean; initData: string; startPa
   const webApp = window.Telegram?.WebApp;
   const launch = new URLSearchParams(window.location.hash.replace(/^#/, ''));
   const fallbackInitData = launch.get('tgWebAppData') ?? '';
-  const isTelegramLaunch = Boolean(webApp || fallbackInitData || launch.get('tgWebAppVersion'));
+  const isTelegramLaunch = Boolean(webApp?.initData || fallbackInitData || launch.get('tgWebAppVersion'));
   if (!isTelegramLaunch) return { isTelegram: false, initData: '' };
 
   webApp?.ready?.();

@@ -9,6 +9,11 @@ describe('initTelegram', () => {
     expect(initTelegram()).toEqual({ isTelegram: false, initData: '' });
   });
 
+  it('does not misclassify Chrome when the public Telegram SDK injects an empty WebApp object', () => {
+    vi.stubGlobal('window', { location: { hash: '' }, Telegram: { WebApp: { initData: '' } } });
+    expect(initTelegram()).toEqual({ isTelegram: false, initData: '' });
+  });
+
   it('recognizes a Telegram launch even when the async SDK has not loaded yet', () => {
     vi.stubGlobal('window', {
       location: { hash: '#tgWebAppVersion=9.0&tgWebAppData=query_id%3Dabc%26start_param%3Dinvite' },
