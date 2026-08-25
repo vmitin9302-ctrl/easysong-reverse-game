@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import main as main_module
 from app.db import Base, get_db
-from app.main import app
+from app.main import app, phrase_score
 from app.models import DuelMatch, DuelRound
 from app.settings import settings
 
@@ -70,13 +70,20 @@ def test_match_requires_persistent_database():
     assert response.status_code == 503
 
 
-def test_round_score_validation_rejects_invalid_breakdown():
-    response = client.post(
-        f'/v1/matches/{uuid.uuid4()}/rounds/1/score',
+def test_round_text_validation_and_normalized_scoring():
+    too_long = client.post(
+        f'/v1/matches/{uuid.uuid4()}/rounds/1/phrase',
         headers={'X-Player-Token': 'invalid'},
-        json={'score': 101, 'acoustic_similarity': 1, 'rhythm_similarity': 1, 'duration_similarity': 1},
+        json={'phrase': 'а' * 161},
     )
-    assert response.status_code == 422
+    empty_guess = client.post(
+        f'/v1/matches/{uuid.uuid4()}/rounds/1/guess',
+        headers={'X-Player-Token': 'invalid'},
+        json={'guess': ''},
+    )
+    assert too_long.status_code == 422
+    assert empty_guess.status_code == 422
+    assert phrase_score('Ёжик, иди домой!', 'ежик иди домой') == 100
 
 
 def test_waiting_match_can_be_cancelled_only_by_creator():
@@ -177,6 +184,7 @@ def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
             assert joined['player'] == 2
             assert joined['current_round'] == 1
             assert joined['active_player'] == 1
+            assert joined['rounds'][0]['status'] == 'awaiting_phrase'
             assert joined['revision'] > created['revision']
 
             resumed = database_client.post(
@@ -193,30 +201,45 @@ def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
             activity = database_client.post(
                 f"/v1/matches/{created['id']}/activity",
                 headers={'X-Player-Token': created['player_token']},
-                json={'status': 'recording_challenge'},
+                json={'status': 'writing_phrase'},
             )
             assert activity.status_code == 200
             state = database_client.get(
                 f"/v1/matches/{created['id']}",
                 headers={'X-Player-Token': joined['player_token']},
             ).json()
-            assert state['activity_status'] == 'recording_challenge'
+            assert state['activity_status'] == 'writing_phrase'
             assert state['activity_player'] == 1
             assert state['revision'] == activity.json()['revision']
+            assert state['rounds'][0]['phrase'] is None
 
             not_active = database_client.post(
                 f"/v1/matches/{created['id']}/activity",
                 headers={'X-Player-Token': joined['player_token']},
-                json={'status': 'recording_attempt'},
+                json={'status': 'guessing_phrase'},
             )
             assert not_active.status_code == 409
 
             wrong_phase = database_client.post(
                 f"/v1/matches/{created['id']}/activity",
                 headers={'X-Player-Token': created['player_token']},
-                json={'status': 'recording_attempt'},
+                json={'status': 'recording_challenge'},
             )
             assert wrong_phase.status_code == 409
+
+            phrase = 'Ёжик, иди домой!'
+            phrase_saved = database_client.post(
+                f"/v1/matches/{created['id']}/rounds/1/phrase",
+                headers={'X-Player-Token': created['player_token']},
+                json={'phrase': phrase},
+            )
+            assert phrase_saved.status_code == 200
+            assert phrase_saved.json()['rounds'][0]['phrase'] == phrase
+            responder_before_guess = database_client.get(
+                f"/v1/matches/{created['id']}",
+                headers={'X-Player-Token': joined['player_token']},
+            ).json()
+            assert responder_before_guess['rounds'][0]['phrase'] is None
 
             heartbeat = database_client.post(
                 f"/v1/matches/{created['id']}/heartbeat",
@@ -232,6 +255,7 @@ def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
 
             monkeypatch.setattr(main_module, 'signed_put', lambda key, content_type: f'https://upload.invalid/{key}')
             monkeypatch.setattr(main_module, 'signed_get', lambda key: f'https://download.invalid/{key}')
+            monkeypatch.setattr(main_module, 'delete_objects', lambda keys: None)
             challenge_path = f"/v1/matches/{created['id']}/rounds/1/challenge-upload"
             upload_body = {'content_type': 'audio/wav', 'idempotency_key': 'challenge-request-1'}
             first_upload = database_client.post(
@@ -278,8 +302,26 @@ def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
             ).status_code == 409
             assert database_client.get(
                 f"/v1/matches/{created['id']}/rounds/1/attempt-audio",
-                headers={'X-Player-Token': created['player_token']},
+                headers={'X-Player-Token': joined['player_token']},
             ).status_code == 200
+
+            denied_guess = database_client.post(
+                f"/v1/matches/{created['id']}/rounds/1/guess",
+                headers={'X-Player-Token': created['player_token']},
+                json={'guess': phrase},
+            )
+            assert denied_guess.status_code == 409
+
+            guessed = database_client.post(
+                f"/v1/matches/{created['id']}/rounds/1/guess",
+                headers={'X-Player-Token': joined['player_token']},
+                json={'guess': 'ежик иди домой'},
+            )
+            assert guessed.status_code == 200
+            assert guessed.json()['status'] == 'round_2'
+            assert guessed.json()['scores'] == [None, 100]
+            assert guessed.json()['rounds'][0]['phrase'] == phrase
+            assert guessed.json()['rounds'][0]['guess'] == 'ежик иди домой'
 
             assert database_client.post(
                 f"/v1/matches/{created['id']}/forfeit",
@@ -287,7 +329,7 @@ def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
             ).status_code == 200
             assert database_client.get(
                 f"/v1/matches/{created['id']}/rounds/1/attempt-audio",
-                headers={'X-Player-Token': created['player_token']},
+                headers={'X-Player-Token': joined['player_token']},
             ).status_code == 409
     finally:
         app.dependency_overrides.pop(get_db, None)
@@ -295,7 +337,7 @@ def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
         test_engine.dispose()
 
 
-def test_scores_winner_and_rematch_are_synchronized_by_player():
+def test_text_scores_winner_and_legacy_rematch_reset_are_synchronized_by_player():
     test_engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
     session_factory = sessionmaker(bind=test_engine)
     Base.metadata.create_all(test_engine)
@@ -315,8 +357,8 @@ def test_scores_winner_and_rematch_are_synchronized_by_player():
             with session_factory() as db:
                 match = db.get(DuelMatch, uuid.UUID(created['id']))
                 rounds = db.query(DuelRound).filter(DuelRound.match_id == match.id).order_by(DuelRound.round_number).all()
-                rounds[0].status = 'complete'; rounds[0].score = 81
-                rounds[1].status = 'complete'; rounds[1].score = 85
+                rounds[0].status = 'complete'; rounds[0].phrase_text = 'первая фраза'; rounds[0].guess_text = 'первая фраза'; rounds[0].score = 81
+                rounds[1].status = 'complete'; rounds[1].phrase_text = 'вторая фраза'; rounds[1].guess_text = 'вторая фраза'; rounds[1].score = 85
                 match.status = 'finished'; match.current_round = 2; match.active_player = 2
                 match.finished_at = datetime.now(UTC); match.revision += 1
                 db.commit()
@@ -354,6 +396,8 @@ def test_scores_winner_and_rematch_are_synchronized_by_player():
             assert accepted['scores'] == [None, None]
             assert accepted['winner'] is None
             assert accepted['activity_status'] == 'rematch_started'
+            assert all(row['status'] == 'awaiting_phrase' for row in accepted['rounds'])
+            assert all(row['phrase'] is None and row['guess'] is None for row in accepted['rounds'])
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(test_engine)

@@ -65,7 +65,7 @@ Railway service получает:
 
 Yandex Cloud не содержит Telegram poller, webhook, gateway или fallback delivery.
 
-Приватный audio bucket должен иметь CORS только для production web origin (`GET`, `PUT`, `HEAD`, заголовок `Content-Type`) и lifecycle-правило аварийного удаления `matches/` через один день. Bootstrap применяет обе настройки идемпотентно из `infra/audio-lifecycle.json`; signed URL всё равно истекает примерно через 20 минут, а API удаляет объекты сразу после score/forfeit.
+Приватный audio bucket должен иметь CORS только для production web origin (`GET`, `PUT`, `HEAD`, заголовок `Content-Type`) и lifecycle-правило аварийного удаления `matches/` через один день. Bootstrap применяет обе настройки идемпотентно из `infra/audio-lifecycle.json`; signed URL всё равно истекает примерно через 20 минут, а API удаляет объекты сразу после текстовой догадки или forfeit.
 
 ## Custom domain — после MVP
 

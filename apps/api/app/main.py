@@ -3,6 +3,7 @@ import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -74,11 +75,12 @@ class ActivityUpdate(BaseModel):
     status: str = Field(min_length=1, max_length=48)
 
 
-class RoundScoreRequest(BaseModel):
-    score: int = Field(ge=0, le=100)
-    acoustic_similarity: float = Field(ge=0, le=1)
-    rhythm_similarity: float = Field(ge=0, le=1)
-    duration_similarity: float = Field(ge=0, le=1)
+class RoundPhraseRequest(BaseModel):
+    phrase: str = Field(min_length=1, max_length=160)
+
+
+class RoundGuessRequest(BaseModel):
+    guess: str = Field(min_length=1, max_length=160)
 
 
 @asynccontextmanager
@@ -137,12 +139,34 @@ def match_view(db: Session, match: DuelMatch, player: int) -> dict:
         'rematch_requested_by': match.rematch_requested_by,
         'scores': player_scores, 'winner': winner,
         'forfeited_by': forfeited_by,
-        'rounds': [
-            {'number': row.round_number, 'challenger': row.challenger, 'responder': row.responder,
-             'status': row.status, 'score': row.score, 'audio_expires_at': row.audio_expires_at}
-            for row in rounds
-        ],
+        'rounds': [round_view(row, player) for row in rounds],
     }
+
+
+def round_view(row: DuelRound, player: int) -> dict:
+    revealed = row.status == 'complete'
+    return {
+        'number': row.round_number,
+        'challenger': row.challenger,
+        'responder': row.responder,
+        'status': row.status,
+        'phrase': row.phrase_text if player == row.challenger or revealed else None,
+        'guess': row.guess_text if player == row.responder or revealed else None,
+        'score': row.score,
+        'audio_expires_at': row.audio_expires_at,
+    }
+
+
+def normalized_phrase(value: str) -> str:
+    simplified = ''.join(character if character.isalnum() else ' ' for character in value.casefold().replace('ё', 'е'))
+    return ' '.join(simplified.split())
+
+
+def phrase_score(phrase: str, guess: str) -> int:
+    expected, actual = normalized_phrase(phrase), normalized_phrase(guess)
+    if not expected or not actual:
+        return 0
+    return round(100 * SequenceMatcher(None, expected, actual).ratio())
 
 
 def bump(match: DuelMatch, *, activity: str | None = None, player: int | None = None) -> None:
@@ -215,8 +239,8 @@ def create_match(payload: MatchCreate, db: Session | None = Depends(get_db)) -> 
     db.add(match)
     db.flush()
     db.add_all([
-        DuelRound(match_id=match.id, round_number=1, challenger=1, responder=2),
-        DuelRound(match_id=match.id, round_number=2, challenger=2, responder=1),
+        DuelRound(match_id=match.id, round_number=1, challenger=1, responder=2, status='awaiting_phrase'),
+        DuelRound(match_id=match.id, round_number=2, challenger=2, responder=1, status='awaiting_phrase'),
     ])
     db.commit()
     return {**match_view(db, match, 1), 'player_token': match.player_one_secret}
@@ -314,7 +338,9 @@ def rematch(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: 
 
     rounds = db.query(DuelRound).filter(DuelRound.match_id == match.id).with_for_update().all()
     for row in rounds:
-        row.status = 'awaiting_challenge'
+        row.status = 'awaiting_phrase'
+        row.phrase_text = None
+        row.guess_text = None
         row.challenge_object_key = None
         row.attempt_object_key = None
         row.audio_expires_at = None
@@ -352,9 +378,10 @@ def heartbeat(match_id: uuid.UUID, x_player_token: str | None = Header(None), db
 
 
 ACTIVITY_BY_ROUND_STATUS = {
+    'awaiting_phrase': {'writing_phrase'},
     'awaiting_challenge': {'recording_challenge', 'processing_challenge', 'listening_challenge', 'sending_challenge'},
     'awaiting_attempt': {'listening_challenge_by_opponent', 'recording_attempt', 'processing_attempt', 'sending_attempt'},
-    'awaiting_score': {'processing_score'},
+    'awaiting_guess': {'listening_restored_attempt', 'guessing_phrase'},
 }
 
 
@@ -370,6 +397,21 @@ def update_activity(match_id: uuid.UUID, payload: ActivityUpdate, x_player_token
         raise HTTPException(status_code=409, detail='Activity does not match the active round state')
     bump(match, activity=payload.status, player=player); db.commit()
     return {'accepted': True, 'revision': match.revision}
+
+
+@app.post('/v1/matches/{match_id}/rounds/{number}/phrase')
+def submit_round_phrase(match_id: uuid.UUID, number: int, payload: RoundPhraseRequest, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db); match = locked_match(db, match_id)
+    row = active_round(db, match_id, number); player = match_player(match, x_player_token)
+    if player != row.challenger: raise HTTPException(status_code=409, detail='Only the challenger can set the phrase')
+    if row.phrase_text and row.status != 'awaiting_phrase': return match_view(db, match, player)
+    ensure_current_turn(match, number, player)
+    if row.status != 'awaiting_phrase': raise HTTPException(status_code=409, detail='Phrase is not allowed now')
+    phrase = payload.phrase.strip()
+    if not normalized_phrase(phrase): raise HTTPException(status_code=422, detail='Phrase must contain letters or numbers')
+    row.phrase_text = phrase; row.status = 'awaiting_challenge'
+    bump(match, activity='phrase_ready', player=player); db.commit()
+    return match_view(db, match, player)
 
 
 @app.post('/v1/matches/{match_id}/rounds/{number}/challenge-upload')
@@ -443,10 +485,10 @@ def attempt_ready(match_id: uuid.UUID, number: int, x_player_token: str | None =
     round_row = active_round(db, match_id, number)
     player = match_player(match, x_player_token)
     if player != round_row.responder or not round_row.attempt_object_key: raise HTTPException(status_code=409, detail='Attempt is not uploaded')
-    if round_row.status == 'awaiting_score': return {'accepted': True, 'revision': match.revision}
+    if round_row.status == 'awaiting_guess': return {'accepted': True, 'revision': match.revision}
     ensure_current_turn(match, number, player)
     if round_row.status != 'awaiting_attempt': raise HTTPException(status_code=409, detail='Attempt is not allowed now')
-    round_row.status = 'awaiting_score'; match.active_player = round_row.challenger; bump(match, activity='processing_score', player=round_row.challenger); db.commit(); return {'accepted': True, 'revision': match.revision}
+    round_row.status = 'awaiting_guess'; match.active_player = round_row.responder; bump(match, activity='guessing_phrase', player=round_row.responder); db.commit(); return {'accepted': True, 'revision': match.revision}
 
 
 @app.get('/v1/matches/{match_id}/rounds/{number}/attempt-audio')
@@ -455,22 +497,25 @@ def attempt_audio(match_id: uuid.UUID, number: int, x_player_token: str | None =
     if match is None: raise HTTPException(status_code=404, detail='Match not found')
     round_row = active_round(db, match_id, number)
     player = match_player(match, x_player_token)
-    if player != round_row.challenger or round_row.status != 'awaiting_score' or not round_row.attempt_object_key: raise HTTPException(status_code=409, detail='Attempt is not available')
+    if player != round_row.responder or round_row.status != 'awaiting_guess' or not round_row.attempt_object_key: raise HTTPException(status_code=409, detail='Attempt is not available')
     ensure_current_turn(match, number, player)
     ensure_audio_available(round_row)
     return {'download_url': storage_get_url(round_row.attempt_object_key), 'expires_at': round_row.audio_expires_at}
 
 
-@app.post('/v1/matches/{match_id}/rounds/{number}/score')
-def submit_round_score(match_id: uuid.UUID, number: int, payload: RoundScoreRequest, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+@app.post('/v1/matches/{match_id}/rounds/{number}/guess')
+def submit_round_guess(match_id: uuid.UUID, number: int, payload: RoundGuessRequest, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
     db = require_database(db); match = locked_match(db, match_id)
     row = active_round(db, match_id, number)
     player = match_player(match, x_player_token)
-    if player != row.challenger: raise HTTPException(status_code=409, detail='Score is not allowed now')
+    if player != row.responder: raise HTTPException(status_code=409, detail='Only the responder can submit a guess')
     if row.status == 'complete': return match_view(db, match, player)
     ensure_current_turn(match, number, player)
-    if row.status != 'awaiting_score': raise HTTPException(status_code=409, detail='Score is not allowed now')
-    row.score = payload.score; row.score_breakdown = payload.model_dump(); row.status = 'complete'
+    if row.status != 'awaiting_guess' or not row.phrase_text: raise HTTPException(status_code=409, detail='Guess is not allowed now')
+    guess = payload.guess.strip()
+    if not normalized_phrase(guess): raise HTTPException(status_code=422, detail='Guess must contain letters or numbers')
+    row.guess_text = guess; row.score = phrase_score(row.phrase_text, guess)
+    row.score_breakdown = {'text_similarity': row.score / 100}; row.status = 'complete'
     if number == 1:
         match.status = 'round_2'; match.current_round = 2; match.active_player = 2; bump(match, activity='switching_roles', player=2)
     else:
@@ -478,7 +523,7 @@ def submit_round_score(match_id: uuid.UUID, number: int, payload: RoundScoreRequ
     keys = [key for key in (row.challenge_object_key, row.attempt_object_key) if key]
     row.challenge_object_key = None; row.attempt_object_key = None; row.audio_expires_at = None; db.commit()
     try: delete_objects(keys)
-    except Exception: logger.exception('Failed to delete scored duel audio; bucket lifecycle will retry cleanup')
+    except Exception: logger.exception('Failed to delete completed duel audio; bucket lifecycle will retry cleanup')
     return match_view(db, match, match_player(match, x_player_token))
 
 

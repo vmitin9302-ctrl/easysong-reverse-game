@@ -29,7 +29,7 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   }
 }
 
-export type DuelRound = { number: number; challenger: number; responder: number; status: string; score: number | null };
+export type DuelRound = { number: number; challenger: number; responder: number; status: string; phrase: string | null; guess: string | null; score: number | null; audio_expires_at?: string | null };
 export type DuelMatch = { id: string; invite_token: string; player: number; status: string; rounds: DuelRound[]; forfeited_by?: number | null; player_token?: string; current_round: number; active_player: number; revision: number; updated_at: string; activity_status: string; activity_player: number | null; activity_updated_at: string | null; player_one_last_seen_at: string | null; player_two_last_seen_at: string | null; invite_expires_at: string | null; rematch_requested_by: number | null; scores: [number | null, number | null]; winner: number | null };
 
 const memoryIdempotencyKeys = new Map<string, string>();
@@ -77,6 +77,9 @@ export async function heartbeatDuelMatch(id: string, token: string): Promise<voi
 export async function updateDuelActivity(id: string, token: string, status: string): Promise<void> {
   await playerRequest(`/v1/matches/${id}/activity`, token, { method: 'POST', body: JSON.stringify({ status }) });
 }
+export async function submitRoundPhrase(id: string, round: number, token: string, phrase: string): Promise<DuelMatch> {
+  return playerRequest(`/v1/matches/${id}/rounds/${round}/phrase`, token, { method: 'POST', body: JSON.stringify({ phrase }) });
+}
 export async function uploadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string, blob: Blob): Promise<void> {
   const storageKey = `reverse_duel_idem_${id}_${round}_${kind}`;
   const requestKey = memoryIdempotencyKeys.get(storageKey) || idempotencyKey(storageKey);
@@ -90,8 +93,8 @@ export async function downloadRoundAudio(id: string, round: number, kind: 'chall
   const result = await playerRequest<{ download_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-audio`, token);
   const response = await fetch(result.download_url); if (!response.ok) throw new Error('Audio download failed'); return response.blob();
 }
-export async function submitRoundScore(id: string, round: number, token: string, score: ScoreBreakdown): Promise<DuelMatch> {
-  return playerRequest(`/v1/matches/${id}/rounds/${round}/score`, token, { method: 'POST', body: JSON.stringify({ score: score.score, acoustic_similarity: score.acousticSimilarity, rhythm_similarity: score.rhythmSimilarity, duration_similarity: score.durationSimilarity }) });
+export async function submitRoundGuess(id: string, round: number, token: string, guess: string): Promise<DuelMatch> {
+  return playerRequest(`/v1/matches/${id}/rounds/${round}/guess`, token, { method: 'POST', body: JSON.stringify({ guess }) });
 }
 
 export async function authenticateTelegram(initData: string): Promise<boolean> {

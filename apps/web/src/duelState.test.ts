@@ -5,8 +5,8 @@ import { liveActivityText } from './App';
 
 function match(status: string, activeStatus: string, challenger = 1, responder = 2): DuelMatch {
   const rounds: DuelRound[] = [
-    { number: 1, challenger, responder, status: activeStatus, score: null },
-    { number: 2, challenger: 2, responder: 1, status: 'awaiting_challenge', score: null },
+    { number: 1, challenger, responder, status: activeStatus, phrase: null, guess: null, score: null },
+    { number: 2, challenger: 2, responder: 1, status: 'awaiting_phrase', phrase: null, guess: null, score: null },
   ];
   return { id: 'match', invite_token: 'invite', player: 1, status, rounds, current_round: 1, active_player: challenger, revision: 1, updated_at: '', activity_status: 'opponent_joined', activity_player: null, activity_updated_at: null, player_one_last_seen_at: null, player_two_last_seen_at: null, invite_expires_at: null, rematch_requested_by: null, scores: [null, null], winner: null };
 }
@@ -16,16 +16,26 @@ describe('remoteTurnAction', () => {
     const decision = remoteTurnAction(match('round_1', 'awaiting_challenge'), 1, {
       localFlowLocked: true,
       hasMicrophone: false,
-      loadedChallengeRound: null,
+      loadedChallengeRound: null, loadedAttemptRound: null,
     });
     expect(decision.action).toBe('preserve');
   });
 
-  it('opens recording after the active challenger grants microphone permission', () => {
+  it('asks the challenger for a phrase before recording', () => {
+    const decision = remoteTurnAction(match('round_1', 'awaiting_phrase'), 1, {
+      localFlowLocked: false,
+      hasMicrophone: false,
+      loadedChallengeRound: null,
+      loadedAttemptRound: null,
+    });
+    expect(decision).toEqual({ action: 'enter-phrase', round: 1 });
+  });
+
+  it('opens recording after the phrase is ready and microphone is granted', () => {
     const decision = remoteTurnAction(match('round_1', 'awaiting_challenge'), 1, {
       localFlowLocked: false,
       hasMicrophone: true,
-      loadedChallengeRound: null,
+      loadedChallengeRound: null, loadedAttemptRound: null,
     });
     expect(decision).toEqual({ action: 'record-original', round: 1 });
   });
@@ -34,38 +44,38 @@ describe('remoteTurnAction', () => {
     const decision = remoteTurnAction(match('round_1', 'awaiting_challenge'), 2, {
       localFlowLocked: false,
       hasMicrophone: false,
-      loadedChallengeRound: null,
+      loadedChallengeRound: null, loadedAttemptRound: null,
     });
     expect(decision.action).toBe('waiting');
   });
 
   it('loads a challenge once and then keeps the listen screen', () => {
     const active = match('round_1', 'awaiting_attempt');
-    expect(remoteTurnAction(active, 2, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null }).action).toBe('load-challenge');
-    expect(remoteTurnAction(active, 2, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: 1 }).action).toBe('listen');
+    expect(remoteTurnAction(active, 2, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null, loadedAttemptRound: null }).action).toBe('load-challenge');
+    expect(remoteTurnAction(active, 2, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: 1, loadedAttemptRound: null }).action).toBe('listen');
   });
 
   it('preserves the responder recording while the server still reports awaiting attempt', () => {
     const decision = remoteTurnAction(match('round_1', 'awaiting_attempt'), 2, {
       localFlowLocked: true,
       hasMicrophone: true,
-      loadedChallengeRound: 1,
+      loadedChallengeRound: 1, loadedAttemptRound: null,
     });
     expect(decision.action).toBe('preserve');
   });
 
-  it('starts scoring once and preserves the screen while scoring is already running', () => {
-    const active = match('round_1', 'awaiting_score');
-    expect(remoteTurnAction(active, 1, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null }).action).toBe('score-attempt');
-    expect(remoteTurnAction(active, 1, { localFlowLocked: true, hasMicrophone: false, loadedChallengeRound: null }).action).toBe('preserve');
+  it('restores the responder attempt before asking for a text guess', () => {
+    const active = match('round_1', 'awaiting_guess');
+    expect(remoteTurnAction(active, 2, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: 1, loadedAttemptRound: null }).action).toBe('load-attempt');
+    expect(remoteTurnAction(active, 2, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: 1, loadedAttemptRound: 1 }).action).toBe('guess');
   });
 
-  it('lets a remote terminal state override a locked local audio step', () => {
+  it('lets a remote terminal state override a locked audio step', () => {
     const forfeited = { ...match('forfeited_by_2', 'awaiting_attempt'), forfeited_by: 2 };
     const decision = remoteTurnAction(forfeited, 1, {
       localFlowLocked: true,
       hasMicrophone: true,
-      loadedChallengeRound: 1,
+      loadedChallengeRound: 1, loadedAttemptRound: null,
     });
     expect(decision.action).toBe('final');
   });

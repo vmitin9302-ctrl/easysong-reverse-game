@@ -1,11 +1,11 @@
 import type { DuelMatch } from './api';
 
-export type RemoteTurnAction = 'cancelled' | 'final' | 'waiting' | 'preserve' | 'permission' | 'record-original' | 'load-challenge' | 'listen' | 'score-attempt';
+export type RemoteTurnAction = 'cancelled' | 'final' | 'waiting' | 'preserve' | 'enter-phrase' | 'permission' | 'record-original' | 'load-challenge' | 'listen' | 'load-attempt' | 'guess';
 
 export function remoteTurnAction(
   match: DuelMatch,
   currentPlayer: number,
-  options: { localFlowLocked: boolean; hasMicrophone: boolean; loadedChallengeRound: number | null },
+  options: { localFlowLocked: boolean; hasMicrophone: boolean; loadedChallengeRound: number | null; loadedAttemptRound: number | null },
 ): { action: RemoteTurnAction; round?: number } {
   if (match.status === 'cancelled') return { action: 'cancelled' };
   if (match.status === 'finished' || match.forfeited_by) return { action: 'final' };
@@ -16,14 +16,17 @@ export function remoteTurnAction(
   if (!active) return { action: 'waiting' };
   const round = active.number;
 
+  if (active.challenger === currentPlayer && active.status === 'awaiting_phrase') {
+    return { action: 'enter-phrase', round };
+  }
   if (active.challenger === currentPlayer && active.status === 'awaiting_challenge') {
     return { action: options.hasMicrophone ? 'record-original' : 'permission', round };
   }
   if (active.responder === currentPlayer && active.status === 'awaiting_attempt') {
     return { action: options.loadedChallengeRound === round ? 'listen' : 'load-challenge', round };
   }
-  if (active.challenger === currentPlayer && active.status === 'awaiting_score') {
-    return { action: 'score-attempt', round };
+  if (active.responder === currentPlayer && active.status === 'awaiting_guess') {
+    return { action: options.loadedAttemptRound === round ? 'guess' : 'load-attempt', round };
   }
   return { action: 'waiting', round };
 }
