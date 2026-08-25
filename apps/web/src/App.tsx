@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { prepareSignal } from '@reverse-game/audio-engine';
+import { prepareSignal, scoreSignals } from '@reverse-game/audio-engine';
 import {
   cancelDuelMatch, createDuelMatch, createGameSession, downloadRoundAudio, forfeitDuelMatch,
   getDuelMatch, heartbeatDuelMatch, joinDuelMatch, submitRoundGuess, submitRoundPhrase,
@@ -13,7 +13,8 @@ import { initTelegram } from './telegram';
 import { remoteTurnAction } from './duelState';
 import './styles.css';
 
-type Stage = 'choose' | 'waiting' | 'phrase' | 'permission' | 'original' | 'review-original' | 'listen' | 'audio-error' | 'attempt' | 'processing' | 'guess' | 'round-result' | 'final' | 'error';
+type Mode = 'local' | 'remote';
+type Stage = 'choose' | 'waiting' | 'phrase' | 'permission' | 'handoff' | 'original' | 'review-original' | 'listen' | 'audio-error' | 'attempt' | 'processing' | 'guess' | 'round-result' | 'final' | 'error';
 const API = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '').replace(/\/$/, '');
 const REMOTE_SESSION_KEY = 'reverse_duel_remote_session';
 const REMOTE_SESSION_MS = 24 * 60 * 60 * 1000;
@@ -21,6 +22,7 @@ type SavedRemoteSession = { id: string; token: string; inviteToken?: string; exp
 
 export default function App() {
   const telegram = useMemo(initTelegram, []);
+  const [mode, setMode] = useState<Mode | null>(null);
   const [stage, setStage] = useState<Stage>('choose');
   const [round, setRound] = useState(1);
   const [scores, setScores] = useState<(number | null)[]>([null, null]);
@@ -43,8 +45,11 @@ export default function App() {
   const stream = useRef<MediaStream | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<BlobPart[]>([]);
+  const originals = useRef<(AudioBuffer | null)[]>([null, null]);
+  const attempts = useRef<(AudioBuffer | null)[]>([null, null]);
   const challengeAudio = useRef<AudioBuffer | null>(null);
   const restoredAttempt = useRef<AudioBuffer | null>(null);
+  const recordingKind = useRef<'original' | 'attempt'>('original');
   const tokenRef = useRef('');
   const localFlowLocked = useRef(false);
   const loadingAudio = useRef(false);
@@ -132,7 +137,7 @@ export default function App() {
         try {
           const restored = await getDuelMatch(saved.id, saved.token);
           if (restored.invite_token === invite) {
-            setMatch(restored); applyPlayerToken(saved.token); rememberRemote(restored, saved.token);
+            setMode('remote'); setMatch(restored); applyPlayerToken(saved.token); rememberRemote(restored, saved.token);
             clearInviteFromUrl(); sync(restored, restored.player); return;
           }
         } catch { /* A stale room must not block a fresh invitation. */ }
@@ -145,7 +150,7 @@ export default function App() {
     if (!saved) return;
     try {
       const restored = await getDuelMatch(saved.id, saved.token);
-      setMatch(restored); applyPlayerToken(saved.token); sync(restored, restored.player);
+      setMode('remote'); setMatch(restored); applyPlayerToken(saved.token); sync(restored, restored.player);
     } catch { forgetRemote(); }
   }
 
@@ -168,20 +173,24 @@ export default function App() {
       history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
     } catch { /* Cosmetic only. */ }
   }
-  function track(event: string, props: Record<string, unknown> = {}) { void trackEvent(sessionId, event, { mode: 'remote', round, ...props }); }
-  function activity(status: string) { if (match && tokenRef.current) void updateDuelActivity(match.id, tokenRef.current, status).catch(() => undefined); }
+  function track(event: string, props: Record<string, unknown> = {}) { void trackEvent(sessionId, event, { mode, round, ...props }); }
+  function activity(status: string) { if (mode === 'remote' && match && tokenRef.current) void updateDuelActivity(match.id, tokenRef.current, status).catch(() => undefined); }
+
+  function chooseLocal() {
+    setMode('local'); setStage('permission'); track('duel_mode_selected', { mode: 'local', value: 'local' });
+  }
 
   async function createRoom() {
-    setStage('waiting');
+    setMode('remote'); setStage('waiting');
     try {
       const created = await createDuelMatch(sessionId);
       const playerToken = created.player_token!;
-      setMatch(created); applyPlayerToken(playerToken); rememberRemote(created, playerToken); track('match_created');
+      setMatch(created); applyPlayerToken(playerToken); rememberRemote(created, playerToken); track('match_created', { mode: 'remote' });
     } catch { fail('Не удалось создать комнату. Проверь соединение и попробуй ещё раз.'); }
   }
 
   async function join(invite: string, resumeToken?: string) {
-    setStage('waiting');
+    setMode('remote'); setStage('waiting');
     try {
       const joined = await joinDuelMatch(invite, resumeToken);
       const playerToken = joined.player_token!;
@@ -204,7 +213,7 @@ export default function App() {
       loadedAttemptRound: restoredAttempt.current ? loadedAttemptRound.current : null,
     });
     if (decision.round) setRound(decision.round);
-    if (decision.action === 'cancelled') { forgetRemote(); setMatch(null); setStage('choose'); }
+    if (decision.action === 'cancelled') { forgetRemote(); setMode(null); setMatch(null); setStage('choose'); }
     else if (decision.action === 'final') { if (next.forfeited_by) setForfeitedBy(next.forfeited_by); setStage('final'); }
     else if (decision.action === 'waiting') setStage('waiting');
     else if (decision.action === 'enter-phrase') {
@@ -235,6 +244,7 @@ export default function App() {
     setMicBusy(true);
     try {
       await context().resume(); await requestMicrophone();
+      if (mode === 'local') { setStage('original'); return; }
       if (!match) throw new Error('Match unavailable');
       const latest = await getDuelMatch(match.id, tokenRef.current);
       const active = latest.rounds.find((item) => item.status !== 'complete');
@@ -262,7 +272,7 @@ export default function App() {
   }
 
   async function start(kind: 'original' | 'attempt') {
-    localFlowLocked.current = true; setMicBusy(true);
+    localFlowLocked.current = true; recordingKind.current = kind; setMicBusy(true);
     try {
       const activeStream = stream.current ?? await requestMicrophone();
       const mime = selectRecorderMimeType();
@@ -292,11 +302,24 @@ export default function App() {
       if (!prepared) throw new Error('Говори чуть громче и не короче секунды.');
       const audio = normalizedGameAudio(context(), prepared.samples, prepared.sampleRate);
       if (kind === 'original') {
+        originals.current[round - 1] = audio;
         challengeAudio.current = reverseAudioBuffer(context(), audio);
         activity('listening_challenge'); setPlaybackError(''); setStage('review-original');
       } else {
-        if (!match) throw new Error('Комната недоступна.');
+        attempts.current[responder - 1] = audio;
         restoredAttempt.current = reverseAudioBuffer(context(), audio); loadedAttemptRound.current = round;
+        if (mode === 'local') {
+          const original = originals.current[round - 1];
+          if (!original) throw new Error('Оригинальная запись недоступна. Запиши раунд ещё раз.');
+          const result = scoreSignals(
+            audioBufferToMono(original), original.sampleRate,
+            audioBufferToMono(restoredAttempt.current), restoredAttempt.current.sampleRate,
+          );
+          if (!result) throw new Error('Не удалось сравнить записи. Попробуй говорить чуть громче.');
+          const nextScores = [...scores]; nextScores[responder - 1] = result.score; setScores(nextScores);
+          localFlowLocked.current = false; setStage('round-result'); track('round_scored', { score: result.score }); return;
+        }
+        if (!match) throw new Error('Комната недоступна.');
         activity('sending_attempt');
         await uploadRoundAudio(match.id, round, 'attempt', tokenRef.current, audioBufferToWav(audio));
         const latest = await getDuelMatch(match.id, tokenRef.current);
@@ -308,7 +331,11 @@ export default function App() {
   }
 
   async function confirmOriginal() {
-    if (!challengeAudio.current || !match) { localFlowLocked.current = false; return setStage('original'); }
+    if (!challengeAudio.current) { localFlowLocked.current = false; return setStage('original'); }
+    if (mode === 'local') {
+      localFlowLocked.current = false; setStage('handoff'); track('challenge_confirmed'); return;
+    }
+    if (!match) { localFlowLocked.current = false; return setStage('original'); }
     localFlowLocked.current = true; setStage('processing');
     try {
       activity('sending_challenge');
@@ -330,6 +357,15 @@ export default function App() {
       await playAudioBuffer(context(), audio);
       track(stage === 'guess' ? 'restored_attempt_played' : 'reverse_audio_played');
     } catch { setPlaybackError('Звук не запустился. Увеличь громкость и нажми ещё раз.'); }
+    finally { setPlaying(false); }
+  }
+
+  async function playSaved(kind: 'original' | 'attempt', playerNumber: number) {
+    const audio = (kind === 'original' ? originals : attempts).current[playerNumber - 1];
+    if (!audio || playing) return;
+    releaseMicrophone(); setPlaying(true); setPlaybackError('');
+    try { await playAudioBuffer(context(), audio); track('final_recording_played', { kind, player: playerNumber }); }
+    catch { setPlaybackError('Не удалось включить запись. Проверь громкость и нажми ещё раз.'); }
     finally { setPlaying(false); }
   }
 
@@ -356,6 +392,13 @@ export default function App() {
     setPhraseText(''); setGuessText(''); setPlaybackError(''); sync(match, player);
   }
 
+  function nextLocalRound() {
+    if (round === 1) {
+      setRound(2); challengeAudio.current = null; restoredAttempt.current = null;
+      loadedChallengeRound.current = null; loadedAttemptRound.current = null; setPlaybackError(''); setStage('handoff');
+    } else setStage('final');
+  }
+
   async function copyInvite() {
     try {
       await navigator.clipboard.writeText(inviteUrl); setInviteNotice('Ссылка скопирована. Отправь её второму игроку.'); track('invite_copied');
@@ -377,6 +420,13 @@ export default function App() {
     catch { try { sync(await getDuelMatch(match.id, tokenRef.current)); } catch { fail('Не удалось отменить комнату. Попробуй ещё раз.'); } }
   }
   async function forfeit() {
+    if (mode === 'local') {
+      const localPlayer = ['listen', 'attempt', 'guess'].includes(stage) || (stage === 'processing' && recordingKind.current === 'attempt')
+        || (stage === 'handoff' && Boolean(challengeAudio.current)) ? responder : challenger;
+      if (!window.confirm(`Игрок ${localPlayer} сдаётся? Матч сразу завершится.`)) return;
+      localFlowLocked.current = false; releaseMicrophone(); setForfeitedBy(localPlayer); setStage('final');
+      track('match_forfeited', { player: localPlayer }); return;
+    }
     if (!match || !window.confirm(`Игрок ${player} сдаётся? Матч сразу завершится.`)) return;
     localFlowLocked.current = false; releaseMicrophone();
     try { sync(await forfeitDuelMatch(match.id, tokenRef.current), player); track('match_forfeited', { player }); }
@@ -390,8 +440,9 @@ export default function App() {
   function reset() {
     tokenRef.current = ''; setToken(''); revisionRef.current = 0; pollFailures.current = 0; setConnection('online');
     localFlowLocked.current = false; loadingAudio.current = false; loadedChallengeRound.current = null; loadedAttemptRound.current = null;
-    releaseMicrophone(); forgetRemote(); setStage('choose'); setRound(1); setScores([null, null]); setForfeitedBy(null); setMatch(null);
-    setPhraseText(''); setGuessText(''); setMessage(''); setInviteNotice(''); setPlaybackError(''); challengeAudio.current = null; restoredAttempt.current = null;
+    releaseMicrophone(); forgetRemote(); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setForfeitedBy(null); setMatch(null);
+    setPhraseText(''); setGuessText(''); setMessage(''); setInviteNotice(''); setPlaybackError('');
+    originals.current = [null, null]; attempts.current = [null, null]; challengeAudio.current = null; restoredAttempt.current = null;
   }
   function exitFinishedMatch() { track('match_exited'); reset(); }
   async function share() {
@@ -405,30 +456,34 @@ export default function App() {
   const resultRow = match?.rounds.find((item) => item.number === round);
   const winner = forfeitedBy
     ? `Игрок ${forfeitedBy} сдался — победил Игрок ${forfeitedBy === 1 ? 2 : 1} 🏆`
-    : match?.winner ? `Победитель — Игрок ${match.winner} 🏆` : 'Ничья 🤝';
-  const canForfeit = Boolean(match && ['round_1', 'round_2'].includes(match.status) && !['final', 'error', 'round-result'].includes(stage));
+    : scores[0] === scores[1] ? 'Ничья 🤝'
+      : `Победитель — Игрок ${mode === 'remote' && match?.winner ? match.winner : scores[0]! > scores[1]! ? 1 : 2} 🏆`;
+  const canForfeit = Boolean(mode && !['choose', 'final', 'error', 'round-result'].includes(stage)
+    && (mode === 'local' || Boolean(match && ['round_1', 'round_2'].includes(match.status))));
   const opponentLastSeen = player === 1 ? match?.player_two_last_seen_at : match?.player_one_last_seen_at;
   const opponentOnline = Boolean(opponentLastSeen && Date.now() - new Date(opponentLastSeen).getTime() < 15_000);
   const activityText = liveActivityText(match, player);
 
   return <main className="app-shell">
-    <header className="brandbar"><div className="brandmark">S</div><div><strong>Сонграйтер</strong><span>онлайн reverse-speech дуэль</span></div><div className="brandbar__pill">2×</div></header>
-    {match && <>
+    <header className="brandbar"><div className="brandmark">S</div><div><strong>Сонграйтер</strong><span>reverse-speech дуэль</span></div><div className="brandbar__pill">2×</div></header>
+    {mode === 'remote' && match && <>
       <div className={`connection-bar connection-bar--${connection}`}><span>{connection === 'reconnecting' ? '🟡 Переподключаемся…' : connection === 'restored' ? '✅ Соединение восстановлено' : match.status === 'waiting_for_player_2' ? '🟡 Ждём соперника' : opponentOnline ? '🟢 Соперник онлайн' : '🟡 Соперник переподключается'}</span><span>Раунд {match.current_round}/2</span></div>
       {match.current_round === 2 && scores[1] !== null && <div className="round-score-banner">Раунд 1: Игрок 2 угадал на <strong>{scores[1]}%</strong></div>}
     </>}
     <section className="game-card">
-      {stage === 'choose' && <Screen><div className="hero-icon">↶</div><p className="eyebrow">ОНЛАЙН-ДУЭЛЬ</p><h1>Скажи наоборот<br />на двух устройствах</h1><p className="lead">Создай комнату и отправь ссылку другу. Вы будете по очереди загадывать, повторять перевёрнутый звук и угадывать фразу.</p><button className="button button--primary" onClick={() => void createRoom()}>🔗 Создать онлайн-комнату</button><p className="privacy-note">Каждый играет со своего телефона или компьютера.</p></Screen>}
+      {stage === 'choose' && <Screen><div className="hero-icon">↶</div><p className="eyebrow">ГОЛОСОВАЯ ДУЭЛЬ</p><h1>Скажи наоборот<br />вдвоём</h1><p className="lead">Играй рядом с другом на одном телефоне или создай онлайн-комнату для двух устройств.</p><button className="button button--primary" onClick={chooseLocal}>📱 Вдвоём на одном устройстве</button><button className="button button--secondary mode-button" onClick={() => void createRoom()}>🔗 Вдвоём на разных устройствах</button><p className="privacy-note">Выбери удобный способ — оба режима доступны.</p></Screen>}
 
       {stage === 'waiting' && <Screen><div className="spinner" /><h2>{activityText || waitingTitle}</h2>{match?.status === 'waiting_for_player_2' ? <><p className="lead">Отправь другу приватную ссылку. Игра начнётся автоматически, когда он подключится.</p><button className="button button--primary" onClick={() => void shareInvite()}>Поделиться приглашением</button><button className="button button--secondary mode-button" onClick={() => void copyInvite()}>Копировать ссылку</button><a className="invite-link" href={inviteUrl}>{inviteUrl}</a>{inviteNotice && <p className="invite-notice">{inviteNotice}</p>}<button className="button button--ghost" onClick={() => void cancelRoom()}>Отменить комнату</button></> : <p className="lead">Экран переключится сам, когда соперник закончит свой шаг.</p>}<p className="privacy-note">Игру можно свернуть: после возвращения ход восстановится.</p></Screen>}
 
       {stage === 'phrase' && <Screen><div className="permission-icon">✍️</div><p className="eyebrow">РАУНД {round} ИЗ 2 · ИГРОК {challenger}</p><h2>Загадай секретную фразу</h2><p className="lead">Напиши то, что сейчас произнесёшь. Соперник не увидит текст до своей догадки.</p><div className="text-entry"><input autoFocus maxLength={160} value={phraseText} onFocus={() => activity('writing_phrase')} onChange={(event) => { setPhraseText(event.target.value); setMessage(''); }} placeholder="Например: сегодня отличный день" /><span>{phraseText.length}/160</span></div>{message && <p className="audio-warning">{message}</p>}<button className="button button--primary" disabled={submitting || !phraseText.trim()} onClick={() => void submitPhrase()}>{submitting ? 'Сохраняем…' : 'Сохранить и записать'}</button></Screen>}
 
-      {stage === 'permission' && <Screen><p className="eyebrow">ИГРОК {player} · РАУНД {round}</p><h2>{micBusy ? 'Включаем микрофон…' : 'Теперь запиши фразу'}</h2><div className="secret-phrase"><span>Твоя фраза</span><strong>{currentRound?.phrase || phraseText}</strong></div><p className="lead">Оригинал останется на этом устройстве. Соперник получит только перевёрнутый звук.</p><button className="button button--primary" disabled={micBusy} onClick={() => void mic()}>{micBusy ? 'Подожди…' : 'Разрешить микрофон'}</button></Screen>}
+      {stage === 'permission' && <Screen><p className="eyebrow">ИГРОК {mode === 'remote' ? player : challenger} · РАУНД {round}</p><h2>{micBusy ? 'Включаем микрофон…' : mode === 'remote' ? 'Теперь запиши фразу' : 'Нужен микрофон'}</h2>{mode === 'remote' ? <><div className="secret-phrase"><span>Твоя фраза</span><strong>{currentRound?.phrase || phraseText}</strong></div><p className="lead">Оригинал останется на этом устройстве. Соперник получит только перевёрнутый звук.</p></> : <p className="lead">Записи обрабатываются прямо на этом устройстве и никуда не отправляются.</p>}<button className="button button--primary" disabled={micBusy} onClick={() => void mic()}>{micBusy ? 'Подожди…' : 'Разрешить микрофон'}</button></Screen>}
 
-      {stage === 'original' && <Record title={`Игрок ${challenger} записывает фразу`} subtitle={`Произнеси точно: «${currentRound?.phrase || phraseText}»`} recording={recording} busy={micBusy} action={() => recording ? stop() : void start('original')} />}
+      {stage === 'handoff' && <Screen><div className="permission-icon">📱</div><p className="eyebrow">РАУНД {round} ИЗ 2</p><h2>Передай устройство Игроку {challengeAudio.current ? responder : challenger}</h2><p className="lead">Каждый игрок видит только свой ход.</p><button className="button button--primary" onClick={() => setStage(challengeAudio.current ? 'listen' : 'original')}>Устройство передано</button></Screen>}
 
-      {stage === 'review-original' && <Screen><p className="eyebrow">ПРОВЕРКА ЗАДАНИЯ</p><h2>Так услышит соперник</h2><p className="lead">Проверь перевёрнутый звук перед отправкой.</p><button className="button button--secondary" disabled={playing} onClick={() => void play()}>▶ Слушать наоборот</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<button className="button button--primary mode-button" onClick={() => void confirmOriginal()}>Отправить сопернику</button><button className="button button--ghost" onClick={() => { challengeAudio.current = null; setStage('original'); }}>Перезаписать</button></Screen>}
+      {stage === 'original' && <Record title={`Игрок ${challenger} записывает фразу`} subtitle={mode === 'remote' ? `Произнеси точно: «${currentRound?.phrase || phraseText}»` : 'Слово или короткая фраза, лучше 2–6 секунд.'} recording={recording} busy={micBusy} action={() => recording ? stop() : void start('original')} />}
+
+      {stage === 'review-original' && <Screen><p className="eyebrow">ПРОВЕРКА ЗАДАНИЯ</p><h2>{mode === 'remote' ? 'Так услышит соперник' : 'Слышно хорошо?'}</h2><p className="lead">{mode === 'remote' ? 'Проверь перевёрнутый звук перед отправкой.' : `Это перевёрнутый звук, который услышит Игрок ${responder}.`}</p><button className="button button--secondary" disabled={playing} onClick={() => void play()}>▶ Слушать наоборот</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<button className="button button--primary mode-button" onClick={() => void confirmOriginal()}>{mode === 'remote' ? 'Отправить сопернику' : 'Всё слышно — продолжить'}</button><button className="button button--ghost" onClick={() => { challengeAudio.current = null; setStage('original'); }}>Перезаписать</button></Screen>}
 
       {stage === 'listen' && <Screen><div className="audio-orb">▶</div><p className="eyebrow">ИГРОК {responder} · РАУНД {round}</p><h2>Послушай звук наоборот</h2><p className="lead">Текст скрыт. Запомни странное звучание и повтори его как можно точнее.</p><button className="button button--secondary" disabled={playing} onClick={() => void play()}>▶ Слушать запись</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<button className="button button--primary mode-button" onClick={() => { localFlowLocked.current = true; setStage('attempt'); }}>🎙 Повторить услышанное</button></Screen>}
 
@@ -438,16 +493,16 @@ export default function App() {
 
       {stage === 'audio-error' && <Screen><div className="error-icon">!</div><h2>Запись пока не загрузилась</h2><p className="lead">{playbackError}</p><button className="button button--primary" onClick={() => void loadAudio(match!.id, round, activeRound?.status === 'awaiting_guess' ? 'attempt' : 'challenge')}>Загрузить ещё раз</button></Screen>}
 
-      {stage === 'processing' && <Screen><div className="spinner" /><h2>Обрабатываем запись…</h2><p className="lead">Переворачиваем звук и безопасно передаём следующий ход.</p></Screen>}
+      {stage === 'processing' && <Screen><div className="spinner" /><h2>{mode === 'local' && recordingKind.current === 'attempt' ? 'Сравниваем записи…' : 'Обрабатываем запись…'}</h2><p className="lead">{mode === 'local' ? 'Переворачиваем звук и считаем сходство прямо на устройстве.' : 'Переворачиваем звук и безопасно передаём следующий ход.'}</p></Screen>}
 
-      {stage === 'round-result' && <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{resultRow?.score ?? 0}%</strong></div><div className="answer-card"><span>Была фраза</span><strong>{resultRow?.phrase}</strong><span>Твоя догадка</span><strong>{resultRow?.guess}</strong></div><button className="button button--primary" onClick={continueAfterResult}>{round === 1 ? 'Теперь поменяться ролями' : 'Общий результат'}</button></Screen>}
+      {stage === 'round-result' && (mode === 'local' ? <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{scores[responder - 1] ?? 0}%</strong></div><h2>Результат Игрока {responder}</h2><button className="button button--primary" onClick={nextLocalRound}>{round === 1 ? 'Поменяться ролями' : 'Общий результат'}</button></Screen> : <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{resultRow?.score ?? 0}%</strong></div><div className="answer-card"><span>Была фраза</span><strong>{resultRow?.phrase}</strong><span>Твоя догадка</span><strong>{resultRow?.guess}</strong></div><button className="button button--primary" onClick={continueAfterResult}>{round === 1 ? 'Теперь поменяться ролями' : 'Общий результат'}</button></Screen>)}
 
-      {stage === 'final' && <div className="screen"><div className="result-head"><p className="eyebrow">ОНЛАЙН-ДУЭЛЬ ЗАВЕРШЕНА</p><h2>{winner}</h2></div><div className="duel-scores"><div><span>Игрок 1</span><strong>{scores[0] ?? '—'}{scores[0] !== null && '%'}</strong></div><div><span>Игрок 2</span><strong>{scores[1] ?? '—'}{scores[1] !== null && '%'}</strong></div></div><div className="round-answers">{match?.rounds.filter((item) => item.status === 'complete').map((item) => <div className="round-answer" key={item.number}><span>Раунд {item.number} · угадывал Игрок {item.responder}</span><strong>«{item.phrase}»</strong><p>Ответ: «{item.guess}» · {item.score}%</p></div>)}</div><button className="button button--secondary" onClick={() => void share()}>Поделиться результатом</button><button className="button button--ghost" onClick={exitFinishedMatch}>Выйти</button><div className="easysong-card"><div className="easysong-card__icon">♫</div><div><h3>А теперь преврати свою идею в песню</h3><p>Создавай песни, картинки, открытки и не только с Сонграйтером / EasySong.</p></div><a className="button button--white" href={API ? `${API}/go/easysong?source=game&campaign=reverse_duel` : 'https://easysong.ru/webapp/auth?next=%2Fwebapp'} onClick={() => track('easysong_clicked')}>Попробовать EasySong →</a></div></div>}
+      {stage === 'final' && <div className="screen"><div className="result-head"><p className="eyebrow">{mode === 'remote' ? 'ОНЛАЙН-ДУЭЛЬ ЗАВЕРШЕНА' : 'ДУЭЛЬ ЗАВЕРШЕНА'}</p><h2>{winner}</h2></div><div className="duel-scores"><div><span>Игрок 1</span><strong>{scores[0] ?? '—'}{scores[0] !== null && '%'}</strong></div><div><span>Игрок 2</span><strong>{scores[1] ?? '—'}{scores[1] !== null && '%'}</strong></div></div>{mode === 'remote' ? <div className="round-answers">{match?.rounds.filter((item) => item.status === 'complete').map((item) => <div className="round-answer" key={item.number}><span>Раунд {item.number} · угадывал Игрок {item.responder}</span><strong>«{item.phrase}»</strong><p>Ответ: «{item.guess}» · {item.score}%</p></div>)}</div> : <div className="recording-replay"><h3>Прослушать записи</h3>{[1, 2].map((number) => <div className="recording-replay__player" key={number}><strong>Игрок {number}</strong><div><button disabled={playing || !originals.current[number - 1]} onClick={() => void playSaved('original', number)}>▶ Что загадал</button><button disabled={playing || !attempts.current[number - 1]} onClick={() => void playSaved('attempt', number)}>▶ Как повторил</button></div></div>)}{playbackError && <p className="audio-warning">{playbackError}</p>}<p>Записи доступны только на этом устройстве до выхода из игры.</p></div>}<button className="button button--secondary" onClick={() => void share()}>Поделиться результатом</button><button className="button button--ghost" onClick={exitFinishedMatch}>Выйти</button><div className="easysong-card"><div className="easysong-card__icon">♫</div><div><h3>А теперь преврати свою идею в песню</h3><p>Создавай песни, картинки, открытки и не только с Сонграйтером / EasySong.</p></div><a className="button button--white" href={API ? `${API}/go/easysong?source=game&campaign=reverse_duel` : 'https://easysong.ru/webapp/auth?next=%2Fwebapp'} onClick={() => track('easysong_clicked')}>Попробовать EasySong →</a></div></div>}
 
       {stage === 'error' && <Screen><div className="error-icon">!</div><h2>Не получилось</h2><p className="lead">{message}</p><button className="button button--primary" onClick={reset}>В начало</button></Screen>}
     </section>
     {canForfeit && <button className="forfeit-button" onClick={() => void forfeit()}>Выйти из дуэли — сдаться</button>}
-    <footer className="footer-note"><span>Только онлайн</span><span>•</span><span>{telegram.isTelegram ? 'Telegram Mini App' : 'Web'}</span></footer>
+    <footer className="footer-note"><span>{mode === 'local' ? 'Одно устройство' : mode === 'remote' ? 'Онлайн-комната' : 'Локально или онлайн'}</span><span>•</span><span>{telegram.isTelegram ? 'Telegram Mini App' : 'Web'}</span></footer>
   </main>;
 }
 

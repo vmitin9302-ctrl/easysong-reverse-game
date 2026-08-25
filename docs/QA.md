@@ -12,6 +12,7 @@ Automated gate:
 
 Manual device QA before public launch:
 
+- Start screen: both «Вдвоём на одном устройстве» and «Вдвоём на разных устройствах» are visible and start independent flows.
 - Chrome Android: microphone permission, two recordings, playback, result.
 - Safari iOS: MediaRecorder MIME fallback and AudioContext resume after user gesture.
 - Telegram Android/iOS: viewport, microphone permission and Mini App bridge.
@@ -23,6 +24,8 @@ Audio acceptance:
 
 - silence and very short clips are rejected;
 - reverse twice restores the sample order;
+- same-device mode completes two rounds with a device handoff between players, calculates both audio-similarity scores locally, and never calls room/audio API endpoints;
+- same-device final screen plays the available original/attempt recordings and exits directly to the mode selector without a forced rematch;
 - cross-device uploads only reversed challenge and responder attempt through signed URLs; verify original is never uploaded;
 - the responder cannot read the secret phrase from match state before submitting a guess;
 - exact guesses score 100 after case, punctuation, whitespace, and `ё`/`е` normalization;
