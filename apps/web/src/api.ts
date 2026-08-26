@@ -29,7 +29,7 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   }
 }
 
-export type DuelRound = { number: number; challenger: number; responder: number; status: string; phrase: string | null; guess: string | null; score: number | null; audio_expires_at?: string | null };
+export type DuelRound = { number: number; challenger: number; responder: number; status: string; phrase: string | null; guess: string | null; score: number | null; audio_expires_at?: string | null; attempt_available: boolean; result_seen: boolean };
 export type DuelMatch = { id: string; invite_token: string; player: number; status: string; rounds: DuelRound[]; forfeited_by?: number | null; player_token?: string; current_round: number; active_player: number; revision: number; updated_at: string; activity_status: string; activity_player: number | null; activity_updated_at: string | null; player_one_last_seen_at: string | null; player_two_last_seen_at: string | null; invite_expires_at: string | null; rematch_requested_by: number | null; scores: [number | null, number | null]; winner: number | null };
 
 const memoryIdempotencyKeys = new Map<string, string>();
@@ -95,6 +95,9 @@ export async function downloadRoundAudio(id: string, round: number, kind: 'chall
 }
 export async function submitRoundGuess(id: string, round: number, token: string, guess: string): Promise<DuelMatch> {
   return playerRequest(`/v1/matches/${id}/rounds/${round}/guess`, token, { method: 'POST', body: JSON.stringify({ guess }) });
+}
+export async function markRoundResultSeen(id: string, round: number, token: string): Promise<DuelMatch> {
+  return playerRequest(`/v1/matches/${id}/rounds/${round}/result-seen`, token, { method: 'POST', body: '{}' });
 }
 
 export async function authenticateTelegram(initData: string): Promise<boolean> {

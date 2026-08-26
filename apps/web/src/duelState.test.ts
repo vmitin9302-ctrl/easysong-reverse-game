@@ -5,8 +5,8 @@ import { liveActivityText } from './App';
 
 function match(status: string, activeStatus: string, challenger = 1, responder = 2): DuelMatch {
   const rounds: DuelRound[] = [
-    { number: 1, challenger, responder, status: activeStatus, phrase: null, guess: null, score: null },
-    { number: 2, challenger: 2, responder: 1, status: 'awaiting_phrase', phrase: null, guess: null, score: null },
+    { number: 1, challenger, responder, status: activeStatus, phrase: null, guess: null, score: null, attempt_available: activeStatus === 'awaiting_guess', result_seen: false },
+    { number: 2, challenger: 2, responder: 1, status: 'awaiting_phrase', phrase: null, guess: null, score: null, attempt_available: false, result_seen: false },
   ];
   return { id: 'match', invite_token: 'invite', player: 1, status, rounds, current_round: 1, active_player: challenger, revision: 1, updated_at: '', activity_status: 'opponent_joined', activity_player: null, activity_updated_at: null, player_one_last_seen_at: null, player_two_last_seen_at: null, invite_expires_at: null, rematch_requested_by: null, scores: [null, null], winner: null };
 }
@@ -66,8 +66,32 @@ describe('remoteTurnAction', () => {
 
   it('restores the responder attempt before asking for a text guess', () => {
     const active = match('round_1', 'awaiting_guess');
-    expect(remoteTurnAction(active, 2, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: 1, loadedAttemptRound: null }).action).toBe('load-attempt');
+    expect(remoteTurnAction(active, 2, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: 1, loadedAttemptRound: null })).toEqual({ action: 'load-attempt', round: 1, attemptTarget: 'guess' });
     expect(remoteTurnAction(active, 2, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: 1, loadedAttemptRound: 1 }).action).toBe('guess');
+  });
+
+  it('lets the challenger hear the restored attempt while the responder guesses', () => {
+    const active = match('round_1', 'awaiting_guess');
+    expect(remoteTurnAction(active, 1, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null, loadedAttemptRound: null })).toEqual({ action: 'load-attempt', round: 1, attemptTarget: 'watch-guess' });
+    expect(remoteTurnAction(active, 1, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null, loadedAttemptRound: 1 })).toEqual({ action: 'watch-guess', round: 1 });
+  });
+
+  it('shows every completed round to both players before advancing or finishing', () => {
+    const completed = match('round_2', 'complete');
+    completed.rounds[0] = { ...completed.rounds[0], phrase: 'секрет', guess: 'ответ', score: 80, attempt_available: true, result_seen: false };
+    expect(remoteTurnAction(completed, 1, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null, loadedAttemptRound: null })).toEqual({ action: 'load-attempt', round: 1, attemptTarget: 'round-result' });
+    expect(remoteTurnAction(completed, 1, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null, loadedAttemptRound: 1 })).toEqual({ action: 'round-result', round: 1 });
+    completed.rounds[0].result_seen = true;
+    expect(remoteTurnAction(completed, 1, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null, loadedAttemptRound: null }).action).toBe('waiting');
+  });
+
+  it('shows the second-round result before the final screen', () => {
+    const finished = match('finished', 'complete');
+    finished.rounds[0].result_seen = true;
+    finished.rounds[1] = { ...finished.rounds[1], status: 'complete', phrase: 'финал', guess: 'ответ', score: 70, attempt_available: true, result_seen: false };
+    expect(remoteTurnAction(finished, 1, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null, loadedAttemptRound: 2 })).toEqual({ action: 'round-result', round: 2 });
+    finished.rounds[1].result_seen = true;
+    expect(remoteTurnAction(finished, 1, { localFlowLocked: false, hasMicrophone: false, loadedChallengeRound: null, loadedAttemptRound: null }).action).toBe('final');
   });
 
   it('lets a remote terminal state override a locked audio step', () => {

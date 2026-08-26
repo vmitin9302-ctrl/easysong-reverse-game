@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, SmallInteger, String, Text, Uuid, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, SmallInteger, String, Text, Uuid, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -109,4 +109,6 @@ class DuelRound(Base):
     score_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
     challenge_idempotency_key: Mapped[str | None] = mapped_column(String(96), nullable=True)
     attempt_idempotency_key: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    challenger_result_seen: Mapped[bool] = mapped_column(Boolean, default=False)
+    responder_result_seen: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

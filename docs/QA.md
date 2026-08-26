@@ -33,6 +33,9 @@ Audio acceptance:
 - two browsers complete round 1, swap roles, complete round 2, see the same scores/winner;
 - expired signed URLs fail, guessed-round object keys are cleared, and bucket lifecycle is enabled;
 - refreshing the responder after uploading an attempt restores that attempt from temporary storage for normal playback and guessing;
+- while the responder listens and types a guess, the challenger receives the same restored attempt and can play it without seeing the not-yet-submitted answer;
+- after each guess, both players see the responder's restored audio, submitted answer, original phrase and identical score before moving on;
+- completed attempt audio remains available after the first result acknowledgement and is deleted after both players acknowledge, with TTL as the orphan fallback;
 - final screen lets either player exit independently, and contains sharing plus the required EasySong marketing copy/CTA.
 
 Cross-device state acceptance:
@@ -41,6 +44,8 @@ Cross-device state acceptance:
 - while player 2 is preparing, recording or uploading an attempt, polling `awaiting_attempt` must not return the UI to the listen screen;
 - a challenge is downloaded once per round and stays playable until the attempt is submitted;
 - an attempt is downloaded once after refresh in `awaiting_guess`, reversed locally, and stays playable while the responder types;
+- the challenger also downloads that attempt once, remains on a live observer screen while the responder types, and is moved to the shared round result automatically;
+- an unseen completed round takes priority over entering the next round or showing the final screen, including after refresh;
 - phrase and guess submission are authoritative, role-checked, and idempotent;
 - after refresh, the saved player token is available to the first audio download before React state finishes rendering;
 - returning from the system share sheet or a backgrounded mobile browser triggers an immediate match refresh;

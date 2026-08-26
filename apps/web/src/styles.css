@@ -478,6 +478,13 @@ h2 {
   animation: spin 850ms linear infinite;
 }
 
+.spinner--small {
+  width: 34px;
+  height: 34px;
+  margin: 2px 0 10px;
+  border-width: 4px;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

@@ -304,6 +304,15 @@ def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
                 f"/v1/matches/{created['id']}/rounds/1/attempt-audio",
                 headers={'X-Player-Token': joined['player_token']},
             ).status_code == 200
+            assert database_client.get(
+                f"/v1/matches/{created['id']}/rounds/1/attempt-audio",
+                headers={'X-Player-Token': created['player_token']},
+            ).status_code == 200
+            assert database_client.post(
+                f"/v1/matches/{created['id']}/rounds/1/result-seen",
+                headers={'X-Player-Token': created['player_token']},
+                json={},
+            ).status_code == 409
 
             denied_guess = database_client.post(
                 f"/v1/matches/{created['id']}/rounds/1/guess",
@@ -322,6 +331,39 @@ def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
             assert guessed.json()['scores'] == [None, 100]
             assert guessed.json()['rounds'][0]['phrase'] == phrase
             assert guessed.json()['rounds'][0]['guess'] == 'ежик иди домой'
+
+            creator_result = database_client.get(
+                f"/v1/matches/{created['id']}",
+                headers={'X-Player-Token': created['player_token']},
+            ).json()
+            assert creator_result['rounds'][0]['guess'] == 'ежик иди домой'
+            assert creator_result['rounds'][0]['attempt_available'] is True
+            assert creator_result['rounds'][0]['result_seen'] is False
+
+            creator_seen = database_client.post(
+                f"/v1/matches/{created['id']}/rounds/1/result-seen",
+                headers={'X-Player-Token': created['player_token']},
+                json={},
+            ).json()
+            assert creator_seen['rounds'][0]['result_seen'] is True
+            assert creator_seen['rounds'][0]['attempt_available'] is True
+            creator_seen_again = database_client.post(
+                f"/v1/matches/{created['id']}/rounds/1/result-seen",
+                headers={'X-Player-Token': created['player_token']},
+                json={},
+            ).json()
+            assert creator_seen_again['revision'] == creator_seen['revision']
+            responder_seen = database_client.post(
+                f"/v1/matches/{created['id']}/rounds/1/result-seen",
+                headers={'X-Player-Token': joined['player_token']},
+                json={},
+            ).json()
+            assert responder_seen['rounds'][0]['result_seen'] is True
+            assert responder_seen['rounds'][0]['attempt_available'] is False
+            assert database_client.get(
+                f"/v1/matches/{created['id']}/rounds/1/attempt-audio",
+                headers={'X-Player-Token': created['player_token']},
+            ).status_code == 409
 
             assert database_client.post(
                 f"/v1/matches/{created['id']}/forfeit",
@@ -398,6 +440,7 @@ def test_text_scores_winner_and_legacy_rematch_reset_are_synchronized_by_player(
             assert accepted['activity_status'] == 'rematch_started'
             assert all(row['status'] == 'awaiting_phrase' for row in accepted['rounds'])
             assert all(row['phrase'] is None and row['guess'] is None for row in accepted['rounds'])
+            assert all(row['result_seen'] is False for row in accepted['rounds'])
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(test_engine)

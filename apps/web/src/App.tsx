@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import { prepareSignal, scoreSignals } from '@reverse-game/audio-engine';
 import {
   cancelDuelMatch, createDuelMatch, createGameSession, downloadRoundAudio, forfeitDuelMatch,
-  getDuelMatch, heartbeatDuelMatch, joinDuelMatch, submitRoundGuess, submitRoundPhrase,
+  getDuelMatch, heartbeatDuelMatch, joinDuelMatch, markRoundResultSeen, submitRoundGuess, submitRoundPhrase,
   trackEvent, updateDuelActivity, uploadRoundAudio, type DuelMatch,
 } from './api';
 import {
@@ -14,7 +14,7 @@ import { remoteTurnAction } from './duelState';
 import './styles.css';
 
 type Mode = 'local' | 'remote';
-type Stage = 'choose' | 'waiting' | 'phrase' | 'permission' | 'handoff' | 'original' | 'review-original' | 'listen' | 'audio-error' | 'attempt' | 'processing' | 'guess' | 'round-result' | 'final' | 'error';
+type Stage = 'choose' | 'waiting' | 'phrase' | 'permission' | 'handoff' | 'original' | 'review-original' | 'listen' | 'audio-error' | 'attempt' | 'processing' | 'guess' | 'watch-guess' | 'round-result' | 'final' | 'error';
 const API = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '').replace(/\/$/, '');
 const REMOTE_SESSION_KEY = 'reverse_duel_remote_session';
 const REMOTE_SESSION_MS = 24 * 60 * 60 * 1000;
@@ -55,6 +55,7 @@ export default function App() {
   const loadingAudio = useRef(false);
   const loadedChallengeRound = useRef<number | null>(null);
   const loadedAttemptRound = useRef<number | null>(null);
+  const audioRetry = useRef<{ number: number; kind: 'challenge' | 'attempt'; target?: 'guess' | 'watch-guess' | 'round-result' } | null>(null);
   const revisionRef = useRef(0);
   const pollFailures = useRef(0);
 
@@ -223,8 +224,10 @@ export default function App() {
     else if (decision.action === 'record-original') setStage('original');
     else if (decision.action === 'listen') setStage('listen');
     else if (decision.action === 'load-challenge') void loadAudio(next.id, decision.round!, 'challenge');
-    else if (decision.action === 'load-attempt') void loadAudio(next.id, decision.round!, 'attempt');
+    else if (decision.action === 'load-attempt') void loadAudio(next.id, decision.round!, 'attempt', decision.attemptTarget);
     else if (decision.action === 'guess') setStage('guess');
+    else if (decision.action === 'watch-guess') setStage('watch-guess');
+    else if (decision.action === 'round-result') setStage('round-result');
   }
 
   async function submitPhrase() {
@@ -255,15 +258,15 @@ export default function App() {
     } finally { setMicBusy(false); }
   }
 
-  async function loadAudio(id: string, number: number, kind: 'challenge' | 'attempt') {
+  async function loadAudio(id: string, number: number, kind: 'challenge' | 'attempt', target?: 'guess' | 'watch-guess' | 'round-result') {
     if (loadingAudio.current) return;
-    loadingAudio.current = true;
+    loadingAudio.current = true; audioRetry.current = { number, kind, target };
     try {
       const decoded = await decodeRecording(context(), await downloadRoundAudio(id, number, kind, tokenRef.current));
       if (kind === 'challenge') {
         challengeAudio.current = decoded; loadedChallengeRound.current = number; setStage('listen');
       } else {
-        restoredAttempt.current = reverseAudioBuffer(context(), decoded); loadedAttemptRound.current = number; setStage('guess');
+        restoredAttempt.current = reverseAudioBuffer(context(), decoded); loadedAttemptRound.current = number; setStage(target || 'guess');
       }
       setPlaybackError('');
     } catch {
@@ -348,14 +351,15 @@ export default function App() {
   }
 
   async function play() {
-    const audio = stage === 'guess' ? restoredAttempt.current : challengeAudio.current;
+    const restoredPlayback = stage === 'guess' || stage === 'watch-guess' || (stage === 'round-result' && mode === 'remote');
+    const audio = restoredPlayback ? restoredAttempt.current : challengeAudio.current;
     if (!audio || playing) return;
     if (stage === 'listen') activity('listening_challenge_by_opponent');
     if (stage === 'guess') activity('listening_restored_attempt');
     releaseMicrophone(); setPlaying(true); setPlaybackError('');
     try {
       await playAudioBuffer(context(), audio);
-      track(stage === 'guess' ? 'restored_attempt_played' : 'reverse_audio_played');
+      track(restoredPlayback ? 'restored_attempt_played' : 'reverse_audio_played');
     } catch { setPlaybackError('Звук не запустился. Увеличь громкость и нажми ещё раз.'); }
     finally { setPlaying(false); }
   }
@@ -377,19 +381,23 @@ export default function App() {
     try {
       const resultRound = round;
       const next = await submitRoundGuess(match.id, resultRound, tokenRef.current, guess);
-      revisionRef.current = next.revision; setMatch(next); setScores(next.scores); setRound(resultRound); setStage('round-result');
+      localFlowLocked.current = false; revisionRef.current = next.revision; setMatch(next); setScores(next.scores); setRound(resultRound); setStage('round-result');
       track('guess_submitted', { score: next.rounds.find((item) => item.number === resultRound)?.score });
     } catch {
       localFlowLocked.current = false; setMessage('Не удалось отправить ответ. Проверь соединение и попробуй ещё раз.');
     } finally { setSubmitting(false); }
   }
 
-  function continueAfterResult() {
+  async function continueAfterResult() {
     if (!match) return;
-    localFlowLocked.current = false;
-    challengeAudio.current = null; restoredAttempt.current = null;
-    loadedChallengeRound.current = null; loadedAttemptRound.current = null;
-    setPhraseText(''); setGuessText(''); setPlaybackError(''); sync(match, player);
+    setSubmitting(true); setMessage('');
+    try {
+      const next = await markRoundResultSeen(match.id, round, tokenRef.current);
+      localFlowLocked.current = false; challengeAudio.current = null; restoredAttempt.current = null;
+      loadedChallengeRound.current = null; loadedAttemptRound.current = null; audioRetry.current = null;
+      setPhraseText(''); setGuessText(''); setPlaybackError(''); sync(next, next.player);
+    } catch { setMessage('Не удалось продолжить. Проверь соединение и попробуй ещё раз.'); }
+    finally { setSubmitting(false); }
   }
 
   function nextLocalRound() {
@@ -442,7 +450,7 @@ export default function App() {
     localFlowLocked.current = false; loadingAudio.current = false; loadedChallengeRound.current = null; loadedAttemptRound.current = null;
     releaseMicrophone(); forgetRemote(); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setForfeitedBy(null); setMatch(null);
     setPhraseText(''); setGuessText(''); setMessage(''); setInviteNotice(''); setPlaybackError('');
-    originals.current = [null, null]; attempts.current = [null, null]; challengeAudio.current = null; restoredAttempt.current = null;
+    originals.current = [null, null]; attempts.current = [null, null]; challengeAudio.current = null; restoredAttempt.current = null; audioRetry.current = null;
   }
   function exitFinishedMatch() { track('match_exited'); reset(); }
   async function share() {
@@ -463,12 +471,13 @@ export default function App() {
   const opponentLastSeen = player === 1 ? match?.player_two_last_seen_at : match?.player_one_last_seen_at;
   const opponentOnline = Boolean(opponentLastSeen && Date.now() - new Date(opponentLastSeen).getTime() < 15_000);
   const activityText = liveActivityText(match, player);
+  const displayedRound = ['watch-guess', 'round-result'].includes(stage) ? round : match?.current_round;
 
   return <main className="app-shell">
     <header className="brandbar"><div className="brandmark">S</div><div><strong>Сонграйтер</strong><span>reverse-speech дуэль</span></div><div className="brandbar__pill">2×</div></header>
     {mode === 'remote' && match && <>
-      <div className={`connection-bar connection-bar--${connection}`}><span>{connection === 'reconnecting' ? '🟡 Переподключаемся…' : connection === 'restored' ? '✅ Соединение восстановлено' : match.status === 'waiting_for_player_2' ? '🟡 Ждём соперника' : opponentOnline ? '🟢 Соперник онлайн' : '🟡 Соперник переподключается'}</span><span>Раунд {match.current_round}/2</span></div>
-      {match.current_round === 2 && scores[1] !== null && <div className="round-score-banner">Раунд 1: Игрок 2 угадал на <strong>{scores[1]}%</strong></div>}
+      <div className={`connection-bar connection-bar--${connection}`}><span>{connection === 'reconnecting' ? '🟡 Переподключаемся…' : connection === 'restored' ? '✅ Соединение восстановлено' : match.status === 'waiting_for_player_2' ? '🟡 Ждём соперника' : opponentOnline ? '🟢 Соперник онлайн' : '🟡 Соперник переподключается'}</span><span>Раунд {displayedRound}/2</span></div>
+      {match.current_round === 2 && scores[1] !== null && !(stage === 'round-result' && round === 1) && <div className="round-score-banner">Раунд 1: Игрок 2 угадал на <strong>{scores[1]}%</strong></div>}
     </>}
     <section className="game-card">
       {stage === 'choose' && <Screen><div className="hero-icon">↶</div><p className="eyebrow">ГОЛОСОВАЯ ДУЭЛЬ</p><h1>Скажи наоборот<br />вдвоём</h1><p className="lead">Играй рядом с другом на одном телефоне или создай онлайн-комнату для двух устройств.</p><button className="button button--primary" onClick={chooseLocal}>📱 Вдвоём на одном устройстве</button><button className="button button--secondary mode-button" onClick={() => void createRoom()}>🔗 Вдвоём на разных устройствах</button><p className="privacy-note">Выбери удобный способ — оба режима доступны.</p></Screen>}
@@ -491,11 +500,13 @@ export default function App() {
 
       {stage === 'guess' && <Screen><div className="permission-icon">🧠</div><p className="eyebrow">ПОСЛЕДНИЙ ШАГ · РАУНД {round}</p><h2>Угадай исходную фразу</h2><p className="lead">Мы развернули твою запись обратно. Послушай, что получилось, и напиши услышанную фразу.</p><button className="button button--secondary" disabled={playing} onClick={() => void play()}>▶ Слушать свою запись нормально</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<div className="text-entry text-entry--spaced"><input maxLength={160} value={guessText} onFocus={() => activity('guessing_phrase')} onChange={(event) => { setGuessText(event.target.value); setMessage(''); }} placeholder="Напиши свою догадку" /><span>{guessText.length}/160</span></div>{message && <p className="audio-warning">{message}</p>}<button className="button button--primary" disabled={submitting || !guessText.trim()} onClick={() => void submitGuess()}>{submitting ? 'Проверяем…' : 'Ответить'}</button></Screen>}
 
-      {stage === 'audio-error' && <Screen><div className="error-icon">!</div><h2>Запись пока не загрузилась</h2><p className="lead">{playbackError}</p><button className="button button--primary" onClick={() => void loadAudio(match!.id, round, activeRound?.status === 'awaiting_guess' ? 'attempt' : 'challenge')}>Загрузить ещё раз</button></Screen>}
+      {stage === 'watch-guess' && <Screen><div className="permission-icon">👀</div><p className="eyebrow">ИГРОК {responder} УГАДЫВАЕТ · РАУНД {round}</p><h2>Послушай, что получилось у соперника</h2><p className="lead">Мы развернули запись Игрока {responder} обратно. Пока он вводит ответ, ты уже можешь услышать результат.</p><button className="button button--secondary" disabled={playing || !restoredAttempt.current} onClick={() => void play()}>▶ Слушать запись нормально</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<div className="secret-phrase"><span>Ты загадывал</span><strong>{currentRound?.phrase || phraseText}</strong></div><div className="spinner spinner--small" /><p className="privacy-note">Ответ появится здесь автоматически.</p></Screen>}
+
+      {stage === 'audio-error' && <Screen><div className="error-icon">!</div><h2>Запись пока не загрузилась</h2><p className="lead">{playbackError}</p><button className="button button--primary" onClick={() => { const retry = audioRetry.current; if (match && retry) void loadAudio(match.id, retry.number, retry.kind, retry.target); }}>Загрузить ещё раз</button>{currentRound?.status === 'complete' && <button className="button button--ghost" onClick={() => setStage('round-result')}>Показать результат без записи</button>}</Screen>}
 
       {stage === 'processing' && <Screen><div className="spinner" /><h2>{mode === 'local' && recordingKind.current === 'attempt' ? 'Сравниваем записи…' : 'Обрабатываем запись…'}</h2><p className="lead">{mode === 'local' ? 'Переворачиваем звук и считаем сходство прямо на устройстве.' : 'Переворачиваем звук и безопасно передаём следующий ход.'}</p></Screen>}
 
-      {stage === 'round-result' && (mode === 'local' ? <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{scores[responder - 1] ?? 0}%</strong></div><h2>Результат Игрока {responder}</h2><button className="button button--primary" onClick={nextLocalRound}>{round === 1 ? 'Поменяться ролями' : 'Общий результат'}</button></Screen> : <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{resultRow?.score ?? 0}%</strong></div><div className="answer-card"><span>Была фраза</span><strong>{resultRow?.phrase}</strong><span>Твоя догадка</span><strong>{resultRow?.guess}</strong></div><button className="button button--primary" onClick={continueAfterResult}>{round === 1 ? 'Теперь поменяться ролями' : 'Общий результат'}</button></Screen>)}
+      {stage === 'round-result' && (mode === 'local' ? <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{scores[responder - 1] ?? 0}%</strong></div><h2>Результат Игрока {responder}</h2><button className="button button--primary" onClick={nextLocalRound}>{round === 1 ? 'Поменяться ролями' : 'Общий результат'}</button></Screen> : <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{resultRow?.score ?? 0}%</strong></div><button className="button button--secondary" disabled={playing || !restoredAttempt.current} onClick={() => void play()}>▶ Слушать запись Игрока {resultRow?.responder} нормально</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<div className="answer-card"><span>Была фраза</span><strong>{resultRow?.phrase}</strong><span>{player === resultRow?.responder ? 'Твой ответ' : `Ответ Игрока ${resultRow?.responder}`}</span><strong>{resultRow?.guess}</strong></div>{message && <p className="audio-warning">{message}</p>}<button className="button button--primary" disabled={submitting} onClick={() => void continueAfterResult()}>{submitting ? 'Продолжаем…' : round === 1 ? 'Продолжить' : 'Общий результат'}</button></Screen>)}
 
       {stage === 'final' && <div className="screen"><div className="result-head"><p className="eyebrow">{mode === 'remote' ? 'ОНЛАЙН-ДУЭЛЬ ЗАВЕРШЕНА' : 'ДУЭЛЬ ЗАВЕРШЕНА'}</p><h2>{winner}</h2></div><div className="duel-scores"><div><span>Игрок 1</span><strong>{scores[0] ?? '—'}{scores[0] !== null && '%'}</strong></div><div><span>Игрок 2</span><strong>{scores[1] ?? '—'}{scores[1] !== null && '%'}</strong></div></div>{mode === 'remote' ? <div className="round-answers">{match?.rounds.filter((item) => item.status === 'complete').map((item) => <div className="round-answer" key={item.number}><span>Раунд {item.number} · угадывал Игрок {item.responder}</span><strong>«{item.phrase}»</strong><p>Ответ: «{item.guess}» · {item.score}%</p></div>)}</div> : <div className="recording-replay"><h3>Прослушать записи</h3>{[1, 2].map((number) => <div className="recording-replay__player" key={number}><strong>Игрок {number}</strong><div><button disabled={playing || !originals.current[number - 1]} onClick={() => void playSaved('original', number)}>▶ Что загадал</button><button disabled={playing || !attempts.current[number - 1]} onClick={() => void playSaved('attempt', number)}>▶ Как повторил</button></div></div>)}{playbackError && <p className="audio-warning">{playbackError}</p>}<p>Записи доступны только на этом устройстве до выхода из игры.</p></div>}<button className="button button--secondary" onClick={() => void share()}>Поделиться результатом</button><button className="button button--ghost" onClick={exitFinishedMatch}>Выйти</button><div className="easysong-card"><div className="easysong-card__icon">♫</div><div><h3>А теперь преврати свою идею в песню</h3><p>Создавай песни, картинки, открытки и не только с Сонграйтером / EasySong.</p></div><a className="button button--white" href={API ? `${API}/go/easysong?source=game&campaign=reverse_duel` : 'https://easysong.ru/webapp/auth?next=%2Fwebapp'} onClick={() => track('easysong_clicked')}>Попробовать EasySong →</a></div></div>}
 

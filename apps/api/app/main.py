@@ -145,6 +145,7 @@ def match_view(db: Session, match: DuelMatch, player: int) -> dict:
 
 def round_view(row: DuelRound, player: int) -> dict:
     revealed = row.status == 'complete'
+    result_seen = row.challenger_result_seen if player == row.challenger else row.responder_result_seen
     return {
         'number': row.round_number,
         'challenger': row.challenger,
@@ -154,6 +155,8 @@ def round_view(row: DuelRound, player: int) -> dict:
         'guess': row.guess_text if player == row.responder or revealed else None,
         'score': row.score,
         'audio_expires_at': row.audio_expires_at,
+        'attempt_available': bool(row.attempt_object_key),
+        'result_seen': result_seen,
     }
 
 
@@ -337,6 +340,7 @@ def rematch(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: 
         return match_view(db, match, player)
 
     rounds = db.query(DuelRound).filter(DuelRound.match_id == match.id).with_for_update().all()
+    keys = [key for row in rounds for key in (row.challenge_object_key, row.attempt_object_key) if key]
     for row in rounds:
         row.status = 'awaiting_phrase'
         row.phrase_text = None
@@ -348,6 +352,8 @@ def rematch(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: 
         row.score_breakdown = {}
         row.challenge_idempotency_key = None
         row.attempt_idempotency_key = None
+        row.challenger_result_seen = False
+        row.responder_result_seen = False
     match.status = 'round_1'
     match.current_round = 1
     match.active_player = 1
@@ -355,6 +361,10 @@ def rematch(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: 
     match.rematch_requested_by = None
     bump(match, activity='rematch_started', player=player)
     db.commit()
+    try:
+        delete_objects(keys)
+    except Exception:
+        logger.exception('Failed to delete previous duel audio during reset; bucket lifecycle will retry cleanup')
     return match_view(db, match, player)
 
 
@@ -497,8 +507,8 @@ def attempt_audio(match_id: uuid.UUID, number: int, x_player_token: str | None =
     if match is None: raise HTTPException(status_code=404, detail='Match not found')
     round_row = active_round(db, match_id, number)
     player = match_player(match, x_player_token)
-    if player != round_row.responder or round_row.status != 'awaiting_guess' or not round_row.attempt_object_key: raise HTTPException(status_code=409, detail='Attempt is not available')
-    ensure_current_turn(match, number, player)
+    if player not in (round_row.challenger, round_row.responder): raise HTTPException(status_code=403, detail='Attempt is not available')
+    if round_row.status not in ('awaiting_guess', 'complete') or not round_row.attempt_object_key: raise HTTPException(status_code=409, detail='Attempt is not available')
     ensure_audio_available(round_row)
     return {'download_url': storage_get_url(round_row.attempt_object_key), 'expires_at': round_row.audio_expires_at}
 
@@ -520,11 +530,29 @@ def submit_round_guess(match_id: uuid.UUID, number: int, payload: RoundGuessRequ
         match.status = 'round_2'; match.current_round = 2; match.active_player = 2; bump(match, activity='switching_roles', player=2)
     else:
         match.status = 'finished'; match.finished_at = datetime.now(UTC); bump(match, activity='match_finished', player=None)
-    keys = [key for key in (row.challenge_object_key, row.attempt_object_key) if key]
-    row.challenge_object_key = None; row.attempt_object_key = None; row.audio_expires_at = None; db.commit()
+    keys = [row.challenge_object_key] if row.challenge_object_key else []
+    row.challenge_object_key = None; db.commit()
     try: delete_objects(keys)
     except Exception: logger.exception('Failed to delete completed duel audio; bucket lifecycle will retry cleanup')
     return match_view(db, match, match_player(match, x_player_token))
+
+
+@app.post('/v1/matches/{match_id}/rounds/{number}/result-seen')
+def mark_round_result_seen(match_id: uuid.UUID, number: int, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
+    db = require_database(db); match = locked_match(db, match_id)
+    row = active_round(db, match_id, number); player = match_player(match, x_player_token)
+    if row.status != 'complete': raise HTTPException(status_code=409, detail='Round result is not available')
+    attribute = 'challenger_result_seen' if player == row.challenger else 'responder_result_seen'
+    if not getattr(row, attribute):
+        setattr(row, attribute, True); bump(match, activity='round_result_seen', player=player)
+    key = None
+    if row.challenger_result_seen and row.responder_result_seen and row.attempt_object_key:
+        key = row.attempt_object_key; row.attempt_object_key = None; row.audio_expires_at = None
+    db.commit()
+    if key:
+        try: delete_objects([key])
+        except Exception: logger.exception('Failed to delete reviewed attempt audio; bucket lifecycle will retry cleanup')
+    return match_view(db, match, player)
 
 
 @app.get('/health')

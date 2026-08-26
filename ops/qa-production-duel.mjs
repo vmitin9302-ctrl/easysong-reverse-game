@@ -70,8 +70,14 @@ async function run() {
   const round1AttemptPut = await uploadAudio(match.id, 1, 'attempt', playerTwo.player_token, clipB);
   const round1AttemptRewrite = (await request(`/v1/matches/${match.id}/rounds/1/attempt-upload`, { method: 'POST', token: playerTwo.player_token, json: { content_type: 'audio/wav', idempotency_key: 'qa-rewrite-attempt' } })).status;
   const round1Attempt = await downloadAudio(match.id, 1, 'attempt', playerTwo.player_token);
+  const round1AttemptForChallenger = await downloadAudio(match.id, 1, 'attempt', match.player_token);
+  const challengerWatchingRound1 = await json(`/v1/matches/${match.id}`, { token: match.player_token });
   const afterRound1 = await json(`/v1/matches/${match.id}/rounds/1/guess`, { method: 'POST', token: playerTwo.player_token, json: { guess: 'ежик иди домой' } });
   const afterRound1Duplicate = await json(`/v1/matches/${match.id}/rounds/1/guess`, { method: 'POST', token: playerTwo.player_token, json: { guess: 'ежик иди домой' } });
+  const challengerResultRound1 = await json(`/v1/matches/${match.id}`, { token: match.player_token });
+  await json(`/v1/matches/${match.id}/rounds/1/result-seen`, { method: 'POST', token: playerTwo.player_token, json: {} });
+  const round1StillAvailable = await downloadAudio(match.id, 1, 'attempt', match.player_token);
+  await json(`/v1/matches/${match.id}/rounds/1/result-seen`, { method: 'POST', token: match.player_token, json: {} });
   const round1Deleted = (await request(round1Attempt.url)).status;
 
   const round2Phrase = 'Сегодня светит солнце';
@@ -80,10 +86,14 @@ async function run() {
   const round2Challenge = await downloadAudio(match.id, 2, 'challenge', match.player_token);
   const round2AttemptPut = await uploadAudio(match.id, 2, 'attempt', match.player_token, clipA);
   const round2Attempt = await downloadAudio(match.id, 2, 'attempt', match.player_token);
+  const round2AttemptForChallenger = await downloadAudio(match.id, 2, 'attempt', playerTwo.player_token);
   const afterRound2 = await json(`/v1/matches/${match.id}/rounds/2/guess`, { method: 'POST', token: match.player_token, json: { guess: 'сегодня' } });
+  const challengerResultRound2 = await json(`/v1/matches/${match.id}`, { token: playerTwo.player_token });
+  await json(`/v1/matches/${match.id}/rounds/2/result-seen`, { method: 'POST', token: match.player_token, json: {} });
+  await json(`/v1/matches/${match.id}/rounds/2/result-seen`, { method: 'POST', token: playerTwo.player_token, json: {} });
   const playerOneFinal = await json(`/v1/matches/${match.id}`, { token: match.player_token });
   const playerTwoFinal = await json(`/v1/matches/${match.id}`, { token: playerTwo.player_token });
-  const round2Deleted = (await request(round2Challenge.url)).status;
+  const round2Deleted = (await request(round2Attempt.url)).status;
 
   const raceMatch = await json('/v1/matches', { method: 'POST', json: { session_id: null } });
   const raceResponses = await Promise.all([
@@ -109,10 +119,14 @@ async function run() {
   expected(activitySeen.player_two_last_seen_at, 'heartbeat must update player presence');
   expected(hiddenRound1Phrase === null, 'secret phrase must stay hidden from the responder before the guess');
   expected(JSON.stringify(raceStatuses) === JSON.stringify([200, 409]), 'concurrent join must yield one 200 and one 409');
-  expected(round1Challenge.bytes > 44 && round1Attempt.bytes > 44 && round2Challenge.bytes > 44 && round2Attempt.bytes > 44, 'uploaded audio must be downloadable and non-empty');
+  expected(round1Challenge.bytes > 44 && round1Attempt.bytes > 44 && round1AttemptForChallenger.bytes > 44 && round2Challenge.bytes > 44 && round2Attempt.bytes > 44 && round2AttemptForChallenger.bytes > 44, 'uploaded audio must be downloadable by both required players and non-empty');
   expected(round1ChallengeRewrite === 409 && round1AttemptRewrite === 409, 'ready audio must not be replaceable');
+  expected(challengerWatchingRound1.rounds[0].status === 'awaiting_guess' && challengerWatchingRound1.rounds[0].attempt_available === true, 'challenger must receive the restored attempt while the responder guesses');
   expected(afterRound1.status === 'round_2' && afterRound1.scores[1] === 100 && afterRound1Duplicate.revision === afterRound1.revision, 'guess finalize must score normalized text and be idempotent');
+  expected(challengerResultRound1.rounds[0].guess === 'ежик иди домой' && challengerResultRound1.rounds[0].score === 100, 'challenger must receive the responder answer and score');
+  expected(round1StillAvailable.bytes > 44, 'attempt must remain available until both players confirm the result');
   expected(afterRound2.status === 'finished', 'round 2 must finish the match');
+  expected(challengerResultRound2.rounds[1].guess === 'сегодня' && challengerResultRound2.rounds[1].score < 100, 'round 2 challenger must receive player 1 audio answer and score');
   expected(playerOneFinal.scores[1] === 100 && playerOneFinal.scores[0] < 100, 'text scores must map to player slots');
   expected(JSON.stringify(playerTwoFinal.scores) === JSON.stringify(playerOneFinal.scores), 'both players must see identical scores');
   expected(playerOneFinal.winner === 2 && playerTwoFinal.winner === 2, 'both players must see the same winner');
@@ -123,8 +137,8 @@ async function run() {
 
   return {
     connection: { resumedSlot: resumedPlayerTwo.player, thirdPlayerStatus, activitySeen: activitySeen.activity_status, raceStatuses },
-    round1: { challengePut: round1ChallengePut, challengeBytes: round1Challenge.bytes, challengeRewrite: round1ChallengeRewrite, attemptPut: round1AttemptPut, attemptBytes: round1Attempt.bytes, attemptRewrite: round1AttemptRewrite, nextState: afterRound1.status, duplicateRevision: afterRound1Duplicate.revision, deletedAudioStatus: round1Deleted },
-    round2: { challengePut: round2ChallengePut, challengeBytes: round2Challenge.bytes, attemptPut: round2AttemptPut, attemptBytes: round2Attempt.bytes, finalState: afterRound2.status, deletedAudioStatus: round2Deleted },
+    round1: { challengePut: round1ChallengePut, challengeBytes: round1Challenge.bytes, attemptPut: round1AttemptPut, attemptBytes: round1Attempt.bytes, challengerAttemptBytes: round1AttemptForChallenger.bytes, attemptRewrite: round1AttemptRewrite, answerSeenByChallenger: challengerResultRound1.rounds[0].guess, nextState: afterRound1.status, duplicateRevision: afterRound1Duplicate.revision, deletedAudioStatus: round1Deleted },
+    round2: { challengePut: round2ChallengePut, challengeBytes: round2Challenge.bytes, attemptPut: round2AttemptPut, attemptBytes: round2Attempt.bytes, challengerAttemptBytes: round2AttemptForChallenger.bytes, answerSeenByChallenger: challengerResultRound2.rounds[1].guess, finalState: afterRound2.status, deletedAudioStatus: round2Deleted },
     final: { playerOneScores: playerOneFinal.scores, playerTwoScores: playerTwoFinal.scores, playerOneWinner: playerOneFinal.winner, playerTwoWinner: playerTwoFinal.winner, phrasesRevealed: playerOneFinal.rounds.map((round) => round.phrase) },
     cancellation: { cancelled: cancelled.cancelled, inviteJoinStatus: cancelledInviteJoin },
     forfeit: { creatorSeesPlayer: creatorAfterForfeit.forfeited_by },
