@@ -11,7 +11,6 @@ import {
 } from './audio/browserAudio';
 import { initTelegram } from './telegram';
 import { remoteTurnAction } from './duelState';
-import { phraseScore, type LocalRoundResult } from './localGame';
 import './styles.css';
 
 type Mode = 'local' | 'remote';
@@ -59,8 +58,6 @@ export default function App() {
   const audioRetry = useRef<{ number: number; kind: 'challenge' | 'attempt'; target?: 'guess' | 'watch-guess' | 'round-result' } | null>(null);
   const revisionRef = useRef(0);
   const pollFailures = useRef(0);
-  const localPhrases = useRef(['', '']);
-  const localGuesses = useRef(['', '']);
 
   const player = match?.player ?? 1;
   const challenger = round;
@@ -181,7 +178,7 @@ export default function App() {
   function activity(status: string) { if (mode === 'remote' && match && tokenRef.current) void updateDuelActivity(match.id, tokenRef.current, status).catch(() => undefined); }
 
   function chooseLocal() {
-    setMode('local'); setStage('phrase'); track('duel_mode_selected', { mode: 'local', value: 'local' });
+    setMode('local'); setStage('permission'); track('duel_mode_selected', { mode: 'local', value: 'local' });
   }
 
   async function createRoom() {
@@ -236,10 +233,6 @@ export default function App() {
   async function submitPhrase() {
     const phrase = phraseText.trim();
     if (!phrase) return setMessage('Напиши слово или короткую фразу.');
-    if (mode === 'local') {
-      localPhrases.current[round - 1] = phrase;
-      setMessage(''); setStage('permission'); track('phrase_submitted', { length: phrase.length }); return;
-    }
     if (!match) return;
     setMessage(''); setSubmitting(true); localFlowLocked.current = true;
     try {
@@ -319,7 +312,7 @@ export default function App() {
         attempts.current[responder - 1] = audio;
         restoredAttempt.current = reverseAudioBuffer(context(), audio); loadedAttemptRound.current = round;
         if (mode === 'local') {
-          localFlowLocked.current = false; setGuessText(''); setStage('guess'); track('attempt_recorded'); return;
+          localFlowLocked.current = false; setStage('round-result'); track('attempt_recorded'); return;
         }
         if (!match) throw new Error('Комната недоступна.');
         activity('sending_attempt');
@@ -375,13 +368,6 @@ export default function App() {
   async function submitGuess() {
     const guess = guessText.trim();
     if (!guess) return setMessage('Напиши, какую фразу ты услышал.');
-    if (mode === 'local') {
-      const score = phraseScore(localPhrases.current[round - 1], guess);
-      localGuesses.current[round - 1] = guess;
-      const nextScores = [...scores]; nextScores[responder - 1] = score; setScores(nextScores);
-      setMessage(''); localFlowLocked.current = false; setStage('round-result');
-      track('guess_submitted', { score }); return;
-    }
     if (!match) return;
     setMessage(''); setSubmitting(true); localFlowLocked.current = true; activity('guessing_phrase');
     try {
@@ -409,7 +395,7 @@ export default function App() {
   function nextLocalRound() {
     if (round === 1) {
       setRound(2); challengeAudio.current = null; restoredAttempt.current = null;
-      loadedChallengeRound.current = null; loadedAttemptRound.current = null; setPhraseText(''); setGuessText(''); setPlaybackError(''); setStage('handoff');
+      loadedChallengeRound.current = null; loadedAttemptRound.current = null; setPlaybackError(''); setStage('handoff');
     } else setStage('final');
   }
 
@@ -457,26 +443,22 @@ export default function App() {
     releaseMicrophone(); forgetRemote(); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setForfeitedBy(null); setMatch(null);
     setPhraseText(''); setGuessText(''); setMessage(''); setInviteNotice(''); setPlaybackError('');
     originals.current = [null, null]; attempts.current = [null, null]; challengeAudio.current = null; restoredAttempt.current = null; audioRetry.current = null;
-    localPhrases.current = ['', '']; localGuesses.current = ['', ''];
   }
   function exitFinishedMatch() { track('match_exited'); reset(); }
   async function share() {
     const text = forfeitedBy
       ? `Дуэль «Скажи наоборот»: Игрок ${forfeitedBy} сдался, победил Игрок ${forfeitedBy === 1 ? 2 : 1}.`
-      : `Дуэль «Скажи наоборот»: Игрок 1 — ${scores[0]}%, Игрок 2 — ${scores[1]}%.`;
+      : mode === 'local' ? 'Мы сыграли в «Скажи наоборот» на одном устройстве 😄'
+        : `Дуэль «Скажи наоборот»: Игрок 1 — ${scores[0]}%, Игрок 2 — ${scores[1]}%.`;
     if (navigator.share) await navigator.share({ title: 'Скажи наоборот', text, url: location.href.split('?')[0] });
     else { await navigator.clipboard.writeText(text); alert('Результат скопирован'); }
   }
 
   const resultRow = match?.rounds.find((item) => item.number === round);
-  const localResults: LocalRoundResult[] = [1, 2].flatMap((number) => {
-    const responsePlayer = number === 1 ? 2 : 1;
-    const score = scores[responsePlayer - 1];
-    return score === null ? [] : [{ number, challenger: number, responder: responsePlayer, phrase: localPhrases.current[number - 1], guess: localGuesses.current[number - 1], score }];
-  });
   const winner = forfeitedBy
     ? `Игрок ${forfeitedBy} сдался — победил Игрок ${forfeitedBy === 1 ? 2 : 1} 🏆`
-    : scores[0] === scores[1] ? 'Ничья 🤝'
+    : mode === 'local' ? 'Вот это было смешно 😄'
+      : scores[0] === scores[1] ? 'Ничья 🤝'
       : `Победитель — Игрок ${mode === 'remote' && match?.winner ? match.winner : scores[0]! > scores[1]! ? 1 : 2} 🏆`;
   const canForfeit = Boolean(mode && !['choose', 'final', 'error', 'round-result'].includes(stage)
     && (mode === 'local' || Boolean(match && ['round_1', 'round_2'].includes(match.status))));
@@ -498,11 +480,11 @@ export default function App() {
 
       {stage === 'phrase' && <Screen><div className="permission-icon">✍️</div><p className="eyebrow">РАУНД {round} ИЗ 2 · ИГРОК {challenger}</p><h2>Загадай секретную фразу</h2><p className="lead">Напиши то, что сейчас произнесёшь. Соперник не увидит текст до своей догадки.</p><div className="text-entry"><input autoFocus maxLength={160} value={phraseText} onFocus={() => activity('writing_phrase')} onChange={(event) => { setPhraseText(event.target.value); setMessage(''); }} placeholder="Например: сегодня отличный день" /><span>{phraseText.length}/160</span></div>{message && <p className="audio-warning">{message}</p>}<button className="button button--primary" disabled={submitting || !phraseText.trim()} onClick={() => void submitPhrase()}>{submitting ? 'Сохраняем…' : 'Сохранить и записать'}</button></Screen>}
 
-      {stage === 'permission' && <Screen><p className="eyebrow">ИГРОК {mode === 'remote' ? player : challenger} · РАУНД {round}</p><h2>{micBusy ? 'Включаем микрофон…' : 'Теперь запиши фразу'}</h2><div className="secret-phrase"><span>Твоя фраза</span><strong>{mode === 'remote' ? currentRound?.phrase || phraseText : localPhrases.current[round - 1]}</strong></div><p className="lead">{mode === 'remote' ? 'Оригинал останется на этом устройстве. Соперник получит только перевёрнутый звук.' : 'Фраза и запись останутся только на этом устройстве.'}</p><button className="button button--primary" disabled={micBusy} onClick={() => void mic()}>{micBusy ? 'Подожди…' : 'Разрешить микрофон'}</button></Screen>}
+      {stage === 'permission' && <Screen><p className="eyebrow">ИГРОК {mode === 'remote' ? player : challenger} · РАУНД {round}</p><h2>{micBusy ? 'Включаем микрофон…' : mode === 'remote' ? 'Теперь запиши фразу' : 'Нужен микрофон'}</h2>{mode === 'remote' ? <><div className="secret-phrase"><span>Твоя фраза</span><strong>{currentRound?.phrase || phraseText}</strong></div><p className="lead">Оригинал останется на этом устройстве. Соперник получит только перевёрнутый звук.</p></> : <p className="lead">Записи обрабатываются прямо на этом устройстве и никуда не отправляются.</p>}<button className="button button--primary" disabled={micBusy} onClick={() => void mic()}>{micBusy ? 'Подожди…' : 'Разрешить микрофон'}</button></Screen>}
 
-      {stage === 'handoff' && <Screen><div className="permission-icon">📱</div><p className="eyebrow">РАУНД {round} ИЗ 2</p><h2>Передай устройство Игроку {challengeAudio.current ? responder : challenger}</h2><p className="lead">Каждый игрок видит только свой ход.</p><button className="button button--primary" onClick={() => setStage(challengeAudio.current ? 'listen' : 'phrase')}>Устройство передано</button></Screen>}
+      {stage === 'handoff' && <Screen><div className="permission-icon">📱</div><p className="eyebrow">РАУНД {round} ИЗ 2</p><h2>Передай устройство Игроку {challengeAudio.current ? responder : challenger}</h2><p className="lead">Каждый игрок видит только свой ход.</p><button className="button button--primary" onClick={() => setStage(challengeAudio.current ? 'listen' : 'original')}>Устройство передано</button></Screen>}
 
-      {stage === 'original' && <Record title={`Игрок ${challenger} записывает фразу`} subtitle={`Произнеси точно: «${mode === 'remote' ? currentRound?.phrase || phraseText : localPhrases.current[round - 1]}»`} recording={recording} busy={micBusy} action={() => recording ? stop() : void start('original')} />}
+      {stage === 'original' && <Record title={`Игрок ${challenger} записывает фразу`} subtitle={mode === 'remote' ? `Произнеси точно: «${currentRound?.phrase || phraseText}»` : 'Скажи любое слово или короткую фразу.'} recording={recording} busy={micBusy} action={() => recording ? stop() : void start('original')} />}
 
       {stage === 'review-original' && <Screen><p className="eyebrow">ПРОВЕРКА ЗАДАНИЯ</p><h2>{mode === 'remote' ? 'Так услышит соперник' : 'Слышно хорошо?'}</h2><p className="lead">{mode === 'remote' ? 'Проверь перевёрнутый звук перед отправкой.' : `Это перевёрнутый звук, который услышит Игрок ${responder}.`}</p><button className="button button--secondary" disabled={playing} onClick={() => void play()}>▶ Слушать наоборот</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<button className="button button--primary mode-button" onClick={() => void confirmOriginal()}>{mode === 'remote' ? 'Отправить сопернику' : 'Всё слышно — продолжить'}</button><button className="button button--ghost" onClick={() => { challengeAudio.current = null; setStage('original'); }}>Перезаписать</button></Screen>}
 
@@ -518,9 +500,9 @@ export default function App() {
 
       {stage === 'processing' && <Screen><div className="spinner" /><h2>Обрабатываем запись…</h2><p className="lead">{mode === 'local' ? 'Переворачиваем звук прямо на устройстве.' : 'Переворачиваем звук и безопасно передаём следующий ход.'}</p></Screen>}
 
-      {stage === 'round-result' && (mode === 'local' ? <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{scores[responder - 1] ?? 0}%</strong></div><button className="button button--secondary" disabled={playing || !restoredAttempt.current} onClick={() => void play()}>▶ Слушать запись Игрока {responder} нормально</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<div className="answer-card"><span>Была фраза</span><strong>{localPhrases.current[round - 1]}</strong><span>Ответ Игрока {responder}</span><strong>{localGuesses.current[round - 1]}</strong></div><button className="button button--primary" onClick={nextLocalRound}>{round === 1 ? 'Поменяться ролями' : 'Общий результат'}</button></Screen> : <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{resultRow?.score ?? 0}%</strong></div><button className="button button--secondary" disabled={playing || !restoredAttempt.current} onClick={() => void play()}>▶ Слушать запись Игрока {resultRow?.responder} нормально</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<div className="answer-card"><span>Была фраза</span><strong>{resultRow?.phrase}</strong><span>{player === resultRow?.responder ? 'Твой ответ' : `Ответ Игрока ${resultRow?.responder}`}</span><strong>{resultRow?.guess}</strong></div>{message && <p className="audio-warning">{message}</p>}<button className="button button--primary" disabled={submitting} onClick={() => void continueAfterResult()}>{submitting ? 'Продолжаем…' : round === 1 ? 'Продолжить' : 'Общий результат'}</button></Screen>)}
+      {stage === 'round-result' && (mode === 'local' ? <Screen><p className="eyebrow">РАУНД {round} ГОТОВ</p><div className="permission-icon">😄</div><h2>Послушайте, что получилось</h2><p className="lead">Мы развернули повтор Игрока {responder} обратно.</p><button className="button button--secondary" disabled={playing || !restoredAttempt.current} onClick={() => void play()}>▶ Слушать результат</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<button className="button button--primary mode-button" onClick={nextLocalRound}>{round === 1 ? 'Поменяться ролями' : 'Завершить игру'}</button></Screen> : <Screen><p className="eyebrow">РЕЗУЛЬТАТ РАУНДА {round}</p><div className="score-ring"><strong>{resultRow?.score ?? 0}%</strong></div><button className="button button--secondary" disabled={playing || !restoredAttempt.current} onClick={() => void play()}>▶ Слушать запись Игрока {resultRow?.responder} нормально</button>{playbackError && <p className="audio-warning">{playbackError}</p>}<div className="answer-card"><span>Была фраза</span><strong>{resultRow?.phrase}</strong><span>{player === resultRow?.responder ? 'Твой ответ' : `Ответ Игрока ${resultRow?.responder}`}</span><strong>{resultRow?.guess}</strong></div>{message && <p className="audio-warning">{message}</p>}<button className="button button--primary" disabled={submitting} onClick={() => void continueAfterResult()}>{submitting ? 'Продолжаем…' : round === 1 ? 'Продолжить' : 'Общий результат'}</button></Screen>)}
 
-      {stage === 'final' && <div className="screen"><div className="result-head"><p className="eyebrow">{mode === 'remote' ? 'ОНЛАЙН-ДУЭЛЬ ЗАВЕРШЕНА' : 'ДУЭЛЬ ЗАВЕРШЕНА'}</p><h2>{winner}</h2></div><div className="duel-scores"><div><span>Игрок 1</span><strong>{scores[0] ?? '—'}{scores[0] !== null && '%'}</strong></div><div><span>Игрок 2</span><strong>{scores[1] ?? '—'}{scores[1] !== null && '%'}</strong></div></div><div className="round-answers">{(mode === 'remote' ? match?.rounds.filter((item) => item.status === 'complete') || [] : localResults).map((item) => <div className="round-answer" key={item.number}><span>Раунд {item.number} · угадывал Игрок {item.responder}</span><strong>«{item.phrase}»</strong><p>Ответ: «{item.guess}» · {item.score}%</p></div>)}</div>{mode === 'local' && <div className="recording-replay"><h3>Прослушать записи</h3>{[1, 2].map((number) => <div className="recording-replay__player" key={number}><strong>Игрок {number}</strong><div><button disabled={playing || !originals.current[number - 1]} onClick={() => void playSaved('original', number)}>▶ Что загадал</button><button disabled={playing || !attempts.current[number - 1]} onClick={() => void playSaved('attempt', number)}>▶ Как повторил</button></div></div>)}{playbackError && <p className="audio-warning">{playbackError}</p>}<p>Записи доступны только на этом устройстве до выхода из игры.</p></div>}<button className="button button--secondary" onClick={() => void share()}>Поделиться результатом</button><button className="button button--ghost" onClick={exitFinishedMatch}>Выйти</button><div className="easysong-card"><div className="easysong-card__icon">♫</div><div><h3>А теперь преврати свою идею в песню</h3><p>Создавай песни, картинки, открытки и не только с Сонграйтером / EasySong.</p></div><a className="button button--white" href={API ? `${API}/go/easysong?source=game&campaign=reverse_duel` : 'https://easysong.ru/webapp/auth?next=%2Fwebapp'} onClick={() => track('easysong_clicked')}>Попробовать EasySong →</a></div></div>}
+      {stage === 'final' && <div className="screen"><div className="result-head"><p className="eyebrow">{mode === 'remote' ? 'ОНЛАЙН-ДУЭЛЬ ЗАВЕРШЕНА' : 'ИГРА ЗАВЕРШЕНА'}</p><h2>{winner}</h2></div>{mode === 'remote' && <><div className="duel-scores"><div><span>Игрок 1</span><strong>{scores[0] ?? '—'}{scores[0] !== null && '%'}</strong></div><div><span>Игрок 2</span><strong>{scores[1] ?? '—'}{scores[1] !== null && '%'}</strong></div></div><div className="round-answers">{match?.rounds.filter((item) => item.status === 'complete').map((item) => <div className="round-answer" key={item.number}><span>Раунд {item.number} · угадывал Игрок {item.responder}</span><strong>«{item.phrase}»</strong><p>Ответ: «{item.guess}» · {item.score}%</p></div>)}</div></>}{mode === 'local' && <div className="recording-replay"><h3>Послушать ещё раз</h3>{[1, 2].map((number) => <div className="recording-replay__player" key={number}><strong>Игрок {number}</strong><div><button disabled={playing || !originals.current[number - 1]} onClick={() => void playSaved('original', number)}>▶ Что сказал</button><button disabled={playing || !attempts.current[number - 1]} onClick={() => void playSaved('attempt', number)}>▶ Как повторил</button></div></div>)}{playbackError && <p className="audio-warning">{playbackError}</p>}<p>Записи доступны только на этом устройстве до выхода из игры.</p></div>}<button className="button button--secondary" onClick={() => void share()}>Поделиться результатом</button><button className="button button--ghost" onClick={exitFinishedMatch}>Выйти</button><div className="easysong-card"><div className="easysong-card__icon">♫</div><div><h3>А теперь преврати свою идею в песню</h3><p>Создавай песни, картинки, открытки и не только с Сонграйтером / EasySong.</p></div><a className="button button--white" href={API ? `${API}/go/easysong?source=game&campaign=reverse_duel` : 'https://easysong.ru/webapp/auth?next=%2Fwebapp'} onClick={() => track('easysong_clicked')}>Попробовать EasySong →</a></div></div>}
 
       {stage === 'error' && <Screen><div className="error-icon">!</div><h2>Не получилось</h2><p className="lead">{message}</p><button className="button button--primary" onClick={reset}>В начало</button></Screen>}
     </section>
