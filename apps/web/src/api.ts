@@ -13,6 +13,7 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   try {
     const response = await fetch(`${baseUrl}${path}`, {
       ...init,
+      credentials: 'include',
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
@@ -129,6 +130,26 @@ export async function createGameSession(input: {
     }),
   });
   return result.id;
+}
+
+export type AnalyticsReport = {
+  period_days: number;
+  totals: Record<string, number>;
+  events: Record<string, number>;
+  top_elements: { element: string; clicks: number }[];
+  daily: Record<string, Record<string, number>>;
+};
+
+export async function adminLogin(username: string, password: string): Promise<void> {
+  await request('/v1/admin/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+}
+
+export async function adminLogout(): Promise<void> {
+  await request('/v1/admin/logout', { method: 'POST', body: '{}' });
+}
+
+export async function getAnalytics(days: number): Promise<AnalyticsReport> {
+  return request(`/v1/admin/analytics?days=${days}`, { method: 'GET' });
 }
 
 export function anonymousId(): string {

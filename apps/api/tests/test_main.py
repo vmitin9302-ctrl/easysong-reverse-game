@@ -495,6 +495,8 @@ def test_analytics_ingest_and_admin_summary_are_protected(monkeypatch):
     app.dependency_overrides[get_db] = override_database
     monkeypatch.setattr(settings, 'analytics_ingest_token', 'ingest-test-token')
     monkeypatch.setattr(settings, 'analytics_admin_token', 'admin-test-token')
+    monkeypatch.setattr(settings, 'analytics_admin_username', 'test-admin')
+    monkeypatch.setattr(settings, 'analytics_admin_password', 'test-password')
     try:
         with TestClient(app) as database_client:
             assert database_client.post('/v1/bot/events', json={'event_name': 'bot_started'}).status_code == 401
@@ -510,6 +512,19 @@ def test_analytics_ingest_and_admin_summary_are_protected(monkeypatch):
             )
             assert report.status_code == 200
             assert report.json()['totals']['bot_starts'] == 1
+            assert database_client.post('/v1/admin/login', json={
+                'username': 'test-admin', 'password': 'wrong-password',
+            }).status_code == 401
+            login = database_client.post('/v1/admin/login', json={
+                'username': 'test-admin', 'password': 'test-password',
+            })
+            assert login.status_code == 200
+            cookie = login.cookies.get('reverse_game_admin')
+            cookie_report = database_client.get(
+                '/v1/admin/analytics?days=30', cookies={'reverse_game_admin': cookie}
+            )
+            assert cookie_report.status_code == 200
+            assert cookie_report.json()['totals']['bot_starts'] == 1
             with session_factory() as db:
                 event = db.query(AnalyticsEvent).one()
                 assert event.source == 'telegram_bot'

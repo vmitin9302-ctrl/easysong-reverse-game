@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     analytics_admin_token: str | None = None
     analytics_ingest_token: str | None = None
+    analytics_admin_username: str | None = None
+    analytics_admin_password: str | None = None
     s3_endpoint_url: str = 'https://storage.yandexcloud.net'
     s3_region: str = 'ru-central1'
     s3_bucket: str | None = None

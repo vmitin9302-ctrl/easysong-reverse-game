@@ -1,3 +1,7 @@
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import secrets
 import uuid
@@ -5,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
@@ -56,6 +60,11 @@ class EventBatch(BaseModel):
     events: list[EventCreate] = Field(max_length=100)
 
 
+class AdminLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=256)
+
+
 class ShareCreate(BaseModel):
     creator_session_id: uuid.UUID
     score: int = Field(ge=0, le=100)
@@ -101,7 +110,7 @@ app = FastAPI(title='EasySong Reverse Game API', version='0.1.0', lifespan=lifes
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in settings.allowed_origins.split(',') if origin.strip()],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=['GET', 'POST', 'OPTIONS'],
     allow_headers=['Content-Type', 'Authorization', 'X-Player-Token'],
 )
@@ -634,6 +643,52 @@ def require_token(provided: str | None, expected: str | None) -> None:
         raise HTTPException(status_code=401, detail='Invalid analytics token')
 
 
+ADMIN_COOKIE = 'reverse_game_admin'
+
+
+def create_admin_session() -> str:
+    payload = base64.urlsafe_b64encode(json.dumps({
+        'exp': int((datetime.now(UTC) + timedelta(hours=12)).timestamp()),
+        'nonce': secrets.token_urlsafe(12),
+    }, separators=(',', ':')).encode()).decode().rstrip('=')
+    signature = hmac.new(settings.session_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f'{payload}.{signature}'
+
+
+def valid_admin_session(value: str | None) -> bool:
+    if not value or '.' not in value:
+        return False
+    payload, signature = value.rsplit('.', 1)
+    expected = hmac.new(settings.session_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    if not secrets.compare_digest(signature, expected):
+        return False
+    try:
+        decoded = base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4))
+        return int(json.loads(decoded)['exp']) > int(datetime.now(UTC).timestamp())
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+
+
+@app.post('/v1/admin/login')
+def admin_login(payload: AdminLoginRequest, response: Response) -> dict:
+    configured = settings.analytics_admin_username and settings.analytics_admin_password
+    valid = configured and secrets.compare_digest(payload.username, settings.analytics_admin_username) \
+        and secrets.compare_digest(payload.password, settings.analytics_admin_password)
+    if not valid:
+        raise HTTPException(status_code=401, detail='Invalid credentials')
+    response.set_cookie(
+        ADMIN_COOKIE, create_admin_session(), max_age=43_200, httponly=True,
+        secure=True, samesite='none', path='/v1/admin',
+    )
+    return {'authenticated': True}
+
+
+@app.post('/v1/admin/logout')
+def admin_logout(response: Response) -> dict:
+    response.delete_cookie(ADMIN_COOKIE, path='/v1/admin', secure=True, httponly=True, samesite='none')
+    return {'authenticated': False}
+
+
 @app.post('/v1/bot/events', status_code=202)
 def save_bot_event(
     payload: EventCreate,
@@ -653,10 +708,12 @@ def save_bot_event(
 def analytics_summary(
     days: int = Query(default=30, ge=1, le=366),
     authorization: str | None = Header(default=None),
+    reverse_game_admin: str | None = Cookie(default=None),
     db: Session | None = Depends(get_db),
 ) -> dict:
     provided = authorization.removeprefix('Bearer ').strip() if authorization else None
-    require_token(provided, settings.analytics_admin_token)
+    if not valid_admin_session(reverse_game_admin):
+        require_token(provided, settings.analytics_admin_token)
     db = require_database(db)
     since = datetime.now(UTC) - timedelta(days=days - 1)
     query = db.query(AnalyticsEvent).filter(AnalyticsEvent.created_at >= since)

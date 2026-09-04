@@ -135,6 +135,8 @@ jobs:
             INVITE_TTL_SECONDS=1800
             ANALYTICS_ADMIN_TOKEN=${{ secrets.ANALYTICS_ADMIN_TOKEN }}
             ANALYTICS_INGEST_TOKEN=${{ secrets.ANALYTICS_INGEST_TOKEN }}
+            ANALYTICS_ADMIN_USERNAME=${{ secrets.ANALYTICS_ADMIN_USERNAME }}
+            ANALYTICS_ADMIN_PASSWORD=${{ secrets.ANALYTICS_ADMIN_PASSWORD }}
           revision-secrets: |
             DATABASE_URL=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/DATABASE_URL
             SESSION_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/SESSION_SECRET
