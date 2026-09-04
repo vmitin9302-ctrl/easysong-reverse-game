@@ -112,7 +112,7 @@ app.add_middleware(
     allow_origins=[origin.strip() for origin in settings.allowed_origins.split(',') if origin.strip()],
     allow_credentials=True,
     allow_methods=['GET', 'POST', 'OPTIONS'],
-    allow_headers=['Content-Type', 'Authorization', 'X-Player-Token'],
+    allow_headers=['Content-Type', 'Authorization', 'X-Admin-Session', 'X-Player-Token'],
 )
 
 
@@ -713,11 +713,12 @@ def save_bot_event(
 def analytics_summary(
     days: int = Query(default=30, ge=1, le=366),
     authorization: str | None = Header(default=None),
+    x_admin_session: str | None = Header(default=None),
     reverse_game_admin: str | None = Cookie(default=None),
     db: Session | None = Depends(get_db),
 ) -> dict:
     provided = authorization.removeprefix('Bearer ').strip() if authorization else None
-    if not valid_admin_session(reverse_game_admin) and not valid_admin_session(provided):
+    if not valid_admin_session(reverse_game_admin) and not valid_admin_session(x_admin_session):
         require_token(provided, settings.analytics_admin_token)
     db = require_database(db)
     since = datetime.now(UTC) - timedelta(days=days - 1)

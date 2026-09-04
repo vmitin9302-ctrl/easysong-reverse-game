@@ -521,7 +521,7 @@ def test_analytics_ingest_and_admin_summary_are_protected(monkeypatch):
             assert login.status_code == 200
             session_token = login.json()['session_token']
             bearer_session_report = database_client.get(
-                '/v1/admin/analytics?days=30', headers={'Authorization': f'Bearer {session_token}'}
+                '/v1/admin/analytics?days=30', headers={'X-Admin-Session': session_token}
             )
             assert bearer_session_report.status_code == 200
             cookie = login.cookies.get('reverse_game_admin')

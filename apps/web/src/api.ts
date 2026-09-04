@@ -151,7 +151,7 @@ export async function adminLogout(): Promise<void> {
 
 export async function getAnalytics(days: number, sessionToken?: string): Promise<AnalyticsReport> {
   return request(`/v1/admin/analytics?days=${days}`, {
-    method: 'GET', headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : undefined,
+    method: 'GET', headers: sessionToken ? { 'X-Admin-Session': sessionToken } : undefined,
   });
 }
 
