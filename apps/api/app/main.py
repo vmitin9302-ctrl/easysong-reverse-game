@@ -643,6 +643,10 @@ def require_token(provided: str | None, expected: str | None) -> None:
         raise HTTPException(status_code=401, detail='Invalid analytics token')
 
 
+def secure_text_equal(left: str, right: str) -> bool:
+    return secrets.compare_digest(left.encode('utf-8'), right.encode('utf-8'))
+
+
 ADMIN_COOKIE = 'reverse_game_admin'
 
 
@@ -672,8 +676,8 @@ def valid_admin_session(value: str | None) -> bool:
 @app.post('/v1/admin/login')
 def admin_login(payload: AdminLoginRequest, response: Response) -> dict:
     configured = settings.analytics_admin_username and settings.analytics_admin_password
-    valid = configured and secrets.compare_digest(payload.username, settings.analytics_admin_username) \
-        and secrets.compare_digest(payload.password, settings.analytics_admin_password)
+    valid = configured and secure_text_equal(payload.username, settings.analytics_admin_username) \
+        and secure_text_equal(payload.password, settings.analytics_admin_password)
     if not valid:
         raise HTTPException(status_code=401, detail='Invalid credentials')
     response.set_cookie(

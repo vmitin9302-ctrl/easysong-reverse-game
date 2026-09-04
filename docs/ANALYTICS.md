@@ -24,7 +24,7 @@
 - `POST /v1/events` и `/v1/events/batch` — public browser ingestion, payload ограничен Pydantic-схемой.
 - `POST /v1/bot/events` — server-to-server ingestion, требует `X-Analytics-Token`.
 - `GET /v1/admin/analytics?days=30` — private JSON report, требует `Authorization: Bearer …`; `days` от 1 до 366.
-- `/stats` — адаптивная панель с логином, итогами, дневным графиком и таблицами. Вход создаёт защищённую HttpOnly-сессию на 12 часов через `POST /v1/admin/login`; выход — `POST /v1/admin/logout`.
+- `/stats.html` — адаптивная панель с логином, итогами, дневным графиком и таблицами. Вход создаёт защищённую HttpOnly-сессию на 12 часов через `POST /v1/admin/login`; выход — `POST /v1/admin/logout`.
 
 Отчёт содержит totals, counts по каждому событию, top-20 элементов и дневную разбивку событий/сессий. Ключи должны быть разными, случайными и храниться только в Yandex Lockbox / Railway Variables.
 Логин и пароль панели задаются только через `ANALYTICS_ADMIN_USERNAME` и `ANALYTICS_ADMIN_PASSWORD`; их нельзя добавлять в репозиторий.

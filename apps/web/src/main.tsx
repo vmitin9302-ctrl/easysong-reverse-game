@@ -6,6 +6,6 @@ import './extras.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    {location.pathname === '/stats' ? <AdminDashboard /> : <App />}
+    {location.pathname === '/stats.html' ? <AdminDashboard /> : <App />}
   </StrictMode>,
 );
