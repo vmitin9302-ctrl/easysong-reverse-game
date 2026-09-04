@@ -680,11 +680,12 @@ def admin_login(payload: AdminLoginRequest, response: Response) -> dict:
         and secure_text_equal(payload.password, settings.analytics_admin_password)
     if not valid:
         raise HTTPException(status_code=401, detail='Invalid credentials')
+    session_token = create_admin_session()
     response.set_cookie(
-        ADMIN_COOKIE, create_admin_session(), max_age=43_200, httponly=True,
+        ADMIN_COOKIE, session_token, max_age=43_200, httponly=True,
         secure=True, samesite='none', path='/v1/admin',
     )
-    return {'authenticated': True}
+    return {'authenticated': True, 'session_token': session_token}
 
 
 @app.post('/v1/admin/logout')
@@ -716,7 +717,7 @@ def analytics_summary(
     db: Session | None = Depends(get_db),
 ) -> dict:
     provided = authorization.removeprefix('Bearer ').strip() if authorization else None
-    if not valid_admin_session(reverse_game_admin):
+    if not valid_admin_session(reverse_game_admin) and not valid_admin_session(provided):
         require_token(provided, settings.analytics_admin_token)
     db = require_database(db)
     since = datetime.now(UTC) - timedelta(days=days - 1)

@@ -140,16 +140,19 @@ export type AnalyticsReport = {
   daily: Record<string, Record<string, number>>;
 };
 
-export async function adminLogin(username: string, password: string): Promise<void> {
-  await request('/v1/admin/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+export async function adminLogin(username: string, password: string): Promise<string> {
+  const result = await request<{ session_token: string }>('/v1/admin/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+  return result.session_token;
 }
 
 export async function adminLogout(): Promise<void> {
   await request('/v1/admin/logout', { method: 'POST', body: '{}' });
 }
 
-export async function getAnalytics(days: number): Promise<AnalyticsReport> {
-  return request(`/v1/admin/analytics?days=${days}`, { method: 'GET' });
+export async function getAnalytics(days: number, sessionToken?: string): Promise<AnalyticsReport> {
+  return request(`/v1/admin/analytics?days=${days}`, {
+    method: 'GET', headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : undefined,
+  });
 }
 
 export function anonymousId(): string {

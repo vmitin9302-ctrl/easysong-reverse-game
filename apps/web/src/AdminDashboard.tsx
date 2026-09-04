@@ -8,6 +8,7 @@ const metrics: [string, string][] = [
   ['easysong_clicks', 'Переходы в EasySong'], ['telegram_banner_clicks', 'Клики по Telegram-баннеру'],
   ['bot_starts', 'Запуски бота'], ['bot_check_clicks', '«Проверить себя»'], ['bot_game_opens', 'Переходы из бота'],
 ];
+const SESSION_KEY = 'reverse_game_admin_session';
 
 export default function AdminDashboard() {
   const [report, setReport] = useState<AnalyticsReport | null>(null);
@@ -15,10 +16,10 @@ export default function AdminDashboard() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const load = async (period = days) => {
+  const load = async (period = days, token = sessionStorage.getItem(SESSION_KEY) || undefined) => {
     setLoading(true); setError('');
-    try { setReport(await getAnalytics(period)); }
-    catch { setReport(null); }
+    try { setReport(await getAnalytics(period, token)); }
+    catch { sessionStorage.removeItem(SESSION_KEY); setReport(null); }
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, []);
@@ -26,7 +27,11 @@ export default function AdminDashboard() {
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setLoading(true); setError('');
     const data = new FormData(event.currentTarget);
-    try { await adminLogin(String(data.get('username')), String(data.get('password'))); await load(); }
+    try {
+      const token = await adminLogin(String(data.get('username')), String(data.get('password')));
+      sessionStorage.setItem(SESSION_KEY, token);
+      await load(days, token);
+    }
     catch { setError('Неверный логин или пароль.'); setLoading(false); }
   }
 
@@ -48,7 +53,7 @@ export default function AdminDashboard() {
     <header><div><p className="admin-eyebrow">Сонграйтер · Аналитика</p><h1>Статистика игры</h1></div>
       <div className="admin-actions"><select value={days} onChange={(e) => { const next = Number(e.target.value); setDays(next); void load(next); }}>
         <option value="7">7 дней</option><option value="30">30 дней</option><option value="90">90 дней</option><option value="366">Год</option>
-      </select><button onClick={() => void load()}>Обновить</button><button className="admin-quiet" onClick={() => void adminLogout().then(() => setReport(null))}>Выйти</button></div>
+      </select><button onClick={() => void load()}>Обновить</button><button className="admin-quiet" onClick={() => { sessionStorage.removeItem(SESSION_KEY); void adminLogout().finally(() => setReport(null)); }}>Выйти</button></div>
     </header>
     <section className="metric-grid">{metrics.map(([key, label]) => <article key={key}><span>{label}</span><strong>{report.totals[key] || 0}</strong></article>)}</section>
     <section className="admin-panel"><h2>Сессии по дням</h2><div className="daily-chart">{daily.length ? daily.map(([date, row]) =>
