@@ -22,7 +22,11 @@ export default function AdminDashboard() {
     catch { sessionStorage.removeItem(SESSION_KEY); setReport(null); }
     finally { setLoading(false); }
   };
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    const token = sessionStorage.getItem(SESSION_KEY);
+    if (token) void load(days, token);
+    else setLoading(false);
+  }, []);
 
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setLoading(true); setError('');
