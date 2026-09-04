@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db
@@ -42,6 +43,12 @@ class ResultCreate(BaseModel):
 class EventCreate(BaseModel):
     session_id: uuid.UUID | None = None
     event_name: str = Field(min_length=1, max_length=96)
+    page: str | None = Field(default=None, max_length=128)
+    section: str | None = Field(default=None, max_length=96)
+    element: str | None = Field(default=None, max_length=128)
+    action: str | None = Field(default=None, max_length=64)
+    anonymous_id: str | None = Field(default=None, max_length=64)
+    source: str | None = Field(default=None, max_length=64)
     properties: dict = Field(default_factory=dict)
 
 
@@ -620,6 +627,72 @@ def save_events(payload: EventBatch, db: Session | None = Depends(get_db)) -> di
         db.add_all([AnalyticsEvent(**event.model_dump()) for event in payload.events])
         db.commit()
     return {'accepted': len(payload.events)}
+
+
+def require_token(provided: str | None, expected: str | None) -> None:
+    if not expected or not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail='Invalid analytics token')
+
+
+@app.post('/v1/bot/events', status_code=202)
+def save_bot_event(
+    payload: EventCreate,
+    x_analytics_token: str | None = Header(default=None),
+    db: Session | None = Depends(get_db),
+) -> dict:
+    require_token(x_analytics_token, settings.analytics_ingest_token)
+    if db is not None:
+        values = payload.model_dump()
+        values['source'] = 'telegram_bot'
+        db.add(AnalyticsEvent(**values))
+        db.commit()
+    return {'accepted': True}
+
+
+@app.get('/v1/admin/analytics')
+def analytics_summary(
+    days: int = Query(default=30, ge=1, le=366),
+    authorization: str | None = Header(default=None),
+    db: Session | None = Depends(get_db),
+) -> dict:
+    provided = authorization.removeprefix('Bearer ').strip() if authorization else None
+    require_token(provided, settings.analytics_admin_token)
+    db = require_database(db)
+    since = datetime.now(UTC) - timedelta(days=days - 1)
+    query = db.query(AnalyticsEvent).filter(AnalyticsEvent.created_at >= since)
+    counts = dict(query.with_entities(AnalyticsEvent.event_name, func.count(AnalyticsEvent.id)).group_by(AnalyticsEvent.event_name).all())
+    sessions = db.query(func.count(GameSession.id)).filter(GameSession.created_at >= since).scalar() or 0
+    top_elements = [
+        {'element': element, 'clicks': count}
+        for element, count in query.filter(AnalyticsEvent.action == 'click', AnalyticsEvent.element.is_not(None)).with_entities(
+            AnalyticsEvent.element, func.count(AnalyticsEvent.id)
+        ).group_by(AnalyticsEvent.element).order_by(func.count(AnalyticsEvent.id).desc()).limit(20).all()
+    ]
+    daily_rows = query.with_entities(
+        func.date(AnalyticsEvent.created_at), AnalyticsEvent.event_name, func.count(AnalyticsEvent.id)
+    ).group_by(func.date(AnalyticsEvent.created_at), AnalyticsEvent.event_name).order_by(func.date(AnalyticsEvent.created_at)).all()
+    daily: dict[str, dict[str, int]] = {}
+    for day, event_name, count in daily_rows:
+        daily.setdefault(str(day), {})[event_name] = count
+    session_daily_rows = db.query(
+        func.date(GameSession.created_at), func.count(GameSession.id)
+    ).filter(GameSession.created_at >= since).group_by(func.date(GameSession.created_at)).all()
+    for day, count in session_daily_rows:
+        daily.setdefault(str(day), {})['sessions'] = count
+    metrics = {
+        'sessions': sessions,
+        'clicks': counts.get('element_clicked', 0),
+        'game_starts': counts.get('game_started', 0),
+        'game_completions': counts.get('game_completed', 0),
+        'local_duels': counts.get('local_duel_started', 0),
+        'online_duels': counts.get('online_duel_started', 0),
+        'easysong_clicks': counts.get('easysong_clicked', 0),
+        'telegram_banner_clicks': counts.get('telegram_banner_clicked', 0),
+        'bot_starts': counts.get('bot_started', 0),
+        'bot_check_clicks': counts.get('bot_check_clicked', 0),
+        'bot_game_opens': counts.get('bot_game_opened', 0),
+    }
+    return {'period_days': days, 'totals': metrics, 'events': counts, 'top_elements': top_elements, 'daily': daily}
 
 
 @app.post('/v1/shares', status_code=201)

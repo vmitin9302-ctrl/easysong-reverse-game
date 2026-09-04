@@ -11,3 +11,4 @@ def test_start_button_opens_the_configured_cross_platform_web_app() -> None:
     assert 'в конце вас ждёт небольшой сюрприз' in payload['text']
     assert payload['reply_markup']['inline_keyboard'][0][0]['text'] == '🎮 Проверить себя'
     assert payload['reply_markup']['inline_keyboard'][0][0]['web_app']['url']
+    assert 'utm_source=telegram_bot' in payload['reply_markup']['inline_keyboard'][0][0]['web_app']['url']

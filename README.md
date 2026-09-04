@@ -66,6 +66,14 @@ Cross-device матч использует backend как единственны
 
 Telegram-бот развёрнут отдельно на Railway в режиме long polling. Дуэльный релиз не меняет его runtime и не возвращает webhook/function в Yandex Cloud; сайт, API, PostgreSQL и временный bucket остаются в Yandex Cloud.
 
+## First-party аналитика
+
+Сайт отправляет только обезличенные продуктовые события в собственный API: визиты, клики по кнопкам и ссылкам, выбор режима, старт/завершение игры, комнаты, EasySong и Telegram-баннер. IP и fingerprint не сохраняются; тексты фраз, догадок и аудио в аналитику не попадают. Схема расширяется миграцией `005_first_party_analytics.sql`.
+
+Приватная сводка доступна как `GET /v1/admin/analytics?days=30` с заголовком `Authorization: Bearer <ANALYTICS_ADMIN_TOKEN>`. Она возвращает итоги, top элементов и разбивку событий по дням. Bot ingest: `POST /v1/bot/events` с `X-Analytics-Token`; его нельзя открывать публичным клиентам.
+
+Для API/Yandex задаются `ANALYTICS_ADMIN_TOKEN` и `ANALYTICS_INGEST_TOKEN`. Для Railway-бота задаются тот же `ANALYTICS_INGEST_TOKEN` и `ANALYTICS_API_URL` (публичный URL API); `TELEGRAM_WEBAPP_URL` остаётся production URL игры. `VITE_TELEGRAM_BOT_URL` задаёт ссылку баннера и сейчас настроен на существующий `https://t.me/easygame7_bot`.
+
 ## Безопасность
 
 Никогда не коммитить `.env`, токены Telegram, ключи Yandex Cloud или доступы к PostgreSQL. Для production секреты будут храниться в Yandex Lockbox.

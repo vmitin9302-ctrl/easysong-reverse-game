@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app import main as main_module
 from app.db import Base, get_db
 from app.main import app, phrase_score
-from app.models import DuelMatch, DuelRound
+from app.models import AnalyticsEvent, DuelMatch, DuelRound
 from app.settings import settings
 
 
@@ -477,6 +477,43 @@ def test_expired_invite_rejects_new_player_but_allows_creator_resume():
             )
             assert resumed.status_code == 200
             assert resumed.json()['player'] == 1
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(test_engine)
+        test_engine.dispose()
+
+
+def test_analytics_ingest_and_admin_summary_are_protected(monkeypatch):
+    test_engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+    session_factory = sessionmaker(bind=test_engine)
+    Base.metadata.create_all(test_engine)
+
+    def override_database():
+        with session_factory() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_database
+    monkeypatch.setattr(settings, 'analytics_ingest_token', 'ingest-test-token')
+    monkeypatch.setattr(settings, 'analytics_admin_token', 'admin-test-token')
+    try:
+        with TestClient(app) as database_client:
+            assert database_client.post('/v1/bot/events', json={'event_name': 'bot_started'}).status_code == 401
+            accepted = database_client.post(
+                '/v1/bot/events',
+                headers={'X-Analytics-Token': 'ingest-test-token'},
+                json={'event_name': 'bot_started', 'anonymous_id': 'anonymous-test-id'},
+            )
+            assert accepted.status_code == 202
+            assert database_client.get('/v1/admin/analytics').status_code == 401
+            report = database_client.get(
+                '/v1/admin/analytics?days=30', headers={'Authorization': 'Bearer admin-test-token'}
+            )
+            assert report.status_code == 200
+            assert report.json()['totals']['bot_starts'] == 1
+            with session_factory() as db:
+                event = db.query(AnalyticsEvent).one()
+                assert event.source == 'telegram_bot'
+                assert event.anonymous_id == 'anonymous-test-id'
     finally:
         app.dependency_overrides.pop(get_db, None)
         Base.metadata.drop_all(test_engine)

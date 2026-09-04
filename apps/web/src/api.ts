@@ -1,6 +1,7 @@
 import type { ScoreBreakdown } from '@reverse-game/audio-engine';
 
 const baseUrl = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '').replace(/\/$/, '');
+const ANONYMOUS_ID_KEY = 'reverse_game_anonymous_id';
 
 export const hasApi = Boolean(baseUrl);
 
@@ -113,6 +114,7 @@ export async function createGameSession(input: {
   source: string;
   platform: string;
   campaign?: string;
+  medium?: string;
   referralToken?: string;
 }): Promise<string | null> {
   if (!hasApi) return null;
@@ -122,10 +124,23 @@ export async function createGameSession(input: {
       source: input.source,
       platform: input.platform,
       campaign: input.campaign,
+      medium: input.medium,
       referral_token: input.referralToken,
     }),
   });
   return result.id;
+}
+
+export function anonymousId(): string {
+  try {
+    const saved = localStorage.getItem(ANONYMOUS_ID_KEY);
+    if (saved) return saved;
+    const generated = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(ANONYMOUS_ID_KEY, generated);
+    return generated;
+  } catch {
+    return `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
 }
 
 function queueEvent(event: unknown) {
@@ -144,7 +159,18 @@ export async function trackEvent(
   properties: Record<string, unknown> = {},
 ): Promise<void> {
   if (!hasApi) return;
-  const event = { session_id: sessionId, event_name: eventName, properties };
+  const { page, section, element, action, source, ...safeProperties } = properties;
+  const event = {
+    session_id: sessionId,
+    event_name: eventName,
+    page: typeof page === 'string' ? page : location.pathname,
+    section: typeof section === 'string' ? section : undefined,
+    element: typeof element === 'string' ? element : undefined,
+    action: typeof action === 'string' ? action : undefined,
+    source: typeof source === 'string' ? source : undefined,
+    anonymous_id: anonymousId(),
+    properties: safeProperties,
+  };
   try {
     await request('/v1/events', {
       method: 'POST',

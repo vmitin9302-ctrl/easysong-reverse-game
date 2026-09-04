@@ -133,6 +133,8 @@ jobs:
             S3_REGION=ru-central1
             AUDIO_TTL_SECONDS=1200
             INVITE_TTL_SECONDS=1800
+            ANALYTICS_ADMIN_TOKEN=${{ secrets.ANALYTICS_ADMIN_TOKEN }}
+            ANALYTICS_INGEST_TOKEN=${{ secrets.ANALYTICS_INGEST_TOKEN }}
           revision-secrets: |
             DATABASE_URL=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/DATABASE_URL
             SESSION_SECRET=${{ env.YC_LOCKBOX_SECRET_ID }}/latest/SESSION_SECRET
@@ -161,6 +163,7 @@ jobs:
           fi
           VITE_API_BASE_URL="$api_url" \
           VITE_EASYSONG_URL='https://easysong.ru/webapp/auth?next=%2Fwebapp' \
+          VITE_TELEGRAM_BOT_URL='https://t.me/easygame7_bot' \
           npm run build
 
       - name: Upload web app to Yandex Object Storage

@@ -187,4 +187,10 @@ resource "yandex_lockbox_secret_version_hashed" "app" {
 
   key_6        = "S3_SECRET_ACCESS_KEY"
   text_value_6 = yandex_iam_service_account_static_access_key.audio_storage.secret_key
+
+  key_7        = "ANALYTICS_ADMIN_TOKEN"
+  text_value_7 = var.analytics_admin_token
+
+  key_8        = "ANALYTICS_INGEST_TOKEN"
+  text_value_8 = var.analytics_ingest_token
 }

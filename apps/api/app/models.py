@@ -41,6 +41,12 @@ class AnalyticsEvent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     event_name: Mapped[str] = mapped_column(String(96), index=True)
+    page: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    section: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    element: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    action: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    anonymous_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     properties: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

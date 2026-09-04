@@ -90,3 +90,15 @@ variable "telegram_bot_token" {
   type        = string
   sensitive   = true
 }
+
+variable "analytics_admin_token" {
+  description = "Bearer token for the private analytics summary endpoint."
+  type        = string
+  sensitive   = true
+}
+
+variable "analytics_ingest_token" {
+  description = "Shared token used only by the Railway Telegram bot to submit analytics events."
+  type        = string
+  sensitive   = true
+}

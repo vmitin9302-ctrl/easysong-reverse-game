@@ -18,6 +18,7 @@ type Stage = 'choose' | 'waiting' | 'phrase' | 'permission' | 'handoff' | 'origi
 const API = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '').replace(/\/$/, '');
 const REMOTE_SESSION_KEY = 'reverse_duel_remote_session';
 const REMOTE_SESSION_MS = 24 * 60 * 60 * 1000;
+const TELEGRAM_BOT_URL = (import.meta.env.VITE_TELEGRAM_BOT_URL as string | undefined) || 'https://t.me/easygame7_bot';
 type SavedRemoteSession = { id: string; token: string; inviteToken?: string; expiresAt: number };
 
 export default function App() {
@@ -58,6 +59,7 @@ export default function App() {
   const audioRetry = useRef<{ number: number; kind: 'challenge' | 'attempt'; target?: 'guess' | 'watch-guess' | 'round-result' } | null>(null);
   const revisionRef = useRef(0);
   const pollFailures = useRef(0);
+  const completionTracked = useRef(false);
 
   const player = match?.player ?? 1;
   const challenger = round;
@@ -74,14 +76,36 @@ export default function App() {
               : 'Готовим следующий ход…';
 
   useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const source = params.get('utm_source') || (telegram.isTelegram ? 'telegram' : 'web');
     void createGameSession({
-      source: telegram.isTelegram ? 'telegram' : 'web',
+      source,
       platform: telegram.isTelegram ? 'telegram_mini_app' : 'web',
-      campaign: 'reverse_duel',
+      campaign: params.get('utm_campaign') || 'reverse_duel',
+      medium: params.get('utm_medium') || undefined,
     }).then(setSessionId).catch(() => undefined);
     void restoreOrJoin();
     return () => { stream.current?.getTracks().forEach((track) => track.stop()); void ctx.current?.close(); };
   }, []);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const params = new URLSearchParams(location.search);
+    void trackEvent(sessionId, 'page_viewed', { page: location.pathname, source: params.get('utm_source') || (telegram.isTelegram ? 'telegram' : 'web') });
+    if (telegram.isTelegram || params.get('utm_source') === 'telegram_bot') {
+      void trackEvent(sessionId, 'bot_game_opened', { page: location.pathname, source: 'telegram_bot' });
+      void trackEvent(sessionId, 'bot_check_clicked', { page: location.pathname, element: 'check_yourself', action: 'click', source: 'telegram_bot' });
+    }
+    const captureClick = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target.closest('button, a') : null;
+      if (!target) return;
+      const label = target.getAttribute('data-analytics') || target.textContent?.trim().replace(/\s+/g, ' ').slice(0, 128) || target.tagName.toLowerCase();
+      const section = target.closest('footer') ? 'footer' : target.closest('.game-card') ? 'game' : 'header';
+      void trackEvent(sessionId, 'element_clicked', { page: location.pathname, section, element: label, action: 'click' });
+    };
+    document.addEventListener('click', captureClick);
+    return () => document.removeEventListener('click', captureClick);
+  }, [sessionId, telegram.isTelegram]);
 
   useEffect(() => {
     if (!match || !token || match.status === 'cancelled' || match.status === 'finished' || match.status.startsWith('forfeited_by_')) return;
@@ -178,11 +202,12 @@ export default function App() {
   function activity(status: string) { if (mode === 'remote' && match && tokenRef.current) void updateDuelActivity(match.id, tokenRef.current, status).catch(() => undefined); }
 
   function chooseLocal() {
-    setMode('local'); setStage('permission'); track('duel_mode_selected', { mode: 'local', value: 'local' });
+    setMode('local'); setStage('permission'); track('duel_mode_selected', { mode: 'local', value: 'local' }); track('local_duel_started'); track('game_started');
   }
 
   async function createRoom() {
     setMode('remote'); setStage('waiting');
+    track('online_duel_started'); track('game_started');
     try {
       const created = await createDuelMatch(sessionId);
       const playerToken = created.player_token!;
@@ -215,7 +240,7 @@ export default function App() {
     });
     if (decision.round) setRound(decision.round);
     if (decision.action === 'cancelled') { forgetRemote(); setMode(null); setMatch(null); setStage('choose'); }
-    else if (decision.action === 'final') { if (next.forfeited_by) setForfeitedBy(next.forfeited_by); setStage('final'); }
+    else if (decision.action === 'final') { if (next.forfeited_by) setForfeitedBy(next.forfeited_by); setStage('final'); if (!completionTracked.current) { completionTracked.current = true; track('game_completed'); } }
     else if (decision.action === 'waiting') setStage('waiting');
     else if (decision.action === 'enter-phrase') {
       const row = next.rounds.find((item) => item.number === decision.round);
@@ -396,7 +421,7 @@ export default function App() {
     if (round === 1) {
       setRound(2); challengeAudio.current = null; restoredAttempt.current = null;
       loadedChallengeRound.current = null; loadedAttemptRound.current = null; setPlaybackError(''); setStage('handoff');
-    } else setStage('final');
+    } else { setStage('final'); if (!completionTracked.current) { completionTracked.current = true; track('game_completed'); } }
   }
 
   async function copyInvite() {
@@ -440,6 +465,7 @@ export default function App() {
   function reset() {
     tokenRef.current = ''; setToken(''); revisionRef.current = 0; pollFailures.current = 0; setConnection('online');
     localFlowLocked.current = false; loadingAudio.current = false; loadedChallengeRound.current = null; loadedAttemptRound.current = null;
+    completionTracked.current = false;
     releaseMicrophone(); forgetRemote(); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setForfeitedBy(null); setMatch(null);
     setPhraseText(''); setGuessText(''); setMessage(''); setInviteNotice(''); setPlaybackError('');
     originals.current = [null, null]; attempts.current = [null, null]; challengeAudio.current = null; restoredAttempt.current = null; audioRetry.current = null;
@@ -467,6 +493,7 @@ export default function App() {
   const activityText = liveActivityText(match, player);
   const displayedRound = ['watch-guess', 'round-result'].includes(stage) ? round : match?.current_round;
 
+  const telegramBannerUrl = `${TELEGRAM_BOT_URL}${TELEGRAM_BOT_URL.includes('?') ? '&' : '?'}start=site_banner&utm_source=reverse_game_site&utm_medium=banner&utm_campaign=reverse_game&utm_content=footer_bot_banner`;
   return <main className="app-shell">
     <header className="brandbar"><div className="brandmark">S</div><div><strong>Сонграйтер</strong><span>reverse-speech дуэль</span></div><div className="brandbar__pill">2×</div></header>
     {mode === 'remote' && match && <>
@@ -507,6 +534,7 @@ export default function App() {
       {stage === 'error' && <Screen><div className="error-icon">!</div><h2>Не получилось</h2><p className="lead">{message}</p><button className="button button--primary" onClick={reset}>В начало</button></Screen>}
     </section>
     {canForfeit && <button className="forfeit-button" onClick={() => void forfeit()}>Выйти из дуэли — сдаться</button>}
+    <a className="telegram-banner" data-analytics="telegram_bot_banner" href={telegramBannerUrl} target="_blank" rel="noreferrer" onClick={() => track('telegram_banner_clicked', { section: 'footer', element: 'telegram_bot_banner', action: 'click' })}><span className="telegram-banner__icon">✈</span><span><strong>«Скажи наоборот» в Telegram</strong><small>Открой бота и начни новую дуэль</small></span><b>Открыть →</b></a>
     <footer className="footer-note"><span>{mode === 'local' ? 'Одно устройство' : mode === 'remote' ? 'Онлайн-комната' : 'Локально или онлайн'}</span><span>•</span><span>{telegram.isTelegram ? 'Telegram Mini App' : 'Web'}</span></footer>
   </main>;
 }
