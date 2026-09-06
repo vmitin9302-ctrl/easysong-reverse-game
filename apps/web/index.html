@@ -4,14 +4,50 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#7B5CF5" />
-    <meta name="description" content="Скажи фразу, услышь её наоборот и попробуй повторить." />
-    <title>Скажи наоборот — игра от Сонграйтера</title>
+    <meta name="description" content="Скажи наоборот — голосовая игра на двоих: запишите фразу, послушайте её задом наперёд и повторите. Играйте на одном телефоне или онлайн с другом по ссылке." />
+    <title>Скажи наоборот — голосовая игра на двоих онлайн</title>
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <link rel="canonical" href="https://скажинаоборот.рф/" />
+    <meta name="google-site-verification" content="qdUl_TEzyRygzw5oqeNH4ZfNZYvNBdjxu7fIMFERfto" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="ru_RU" />
+    <meta property="og:site_name" content="Скажи наоборот" />
+    <meta property="og:title" content="Скажи наоборот — голосовая игра на двоих" />
+    <meta property="og:description" content="Запишите фразу, переверните голос и попробуйте повторить. Играйте рядом или устройте онлайн-дуэль с другом." />
+    <meta property="og:url" content="https://xn--80aadskjyjbavcy.xn--p1ai/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Скажи наоборот — голосовая игра на двоих" />
+    <meta name="twitter:description" content="Услышьте свою фразу наоборот и попробуйте повторить. На одном телефоне или онлайн с другом." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": ["WebApplication", "Game"],
+        "@id": "https://xn--80aadskjyjbavcy.xn--p1ai/#game",
+        "name": "Скажи наоборот",
+        "url": "https://xn--80aadskjyjbavcy.xn--p1ai/",
+        "description": "Голосовая игра на двоих от Сонграйтера: слушайте фразы задом наперёд и пробуйте повторить их на одном устройстве или в онлайн-дуэли.",
+        "applicationCategory": "GameApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "JavaScript, микрофон и разрешение на запись звука",
+        "inLanguage": "ru",
+        "numberOfPlayers": {"@type": "QuantitativeValue", "minValue": 2, "maxValue": 2},
+        "isAccessibleForFree": true
+      }
+    </script>
     <!-- Telegram may be slow or blocked by a mobile provider. Never let its
          optional SDK delay the game UI in Safari, Chrome or an in-app browser. -->
     <script async src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
     <div id="root"></div>
+    <section class="game-about" aria-labelledby="game-about-title">
+      <h2 id="game-about-title">Как играть в «Скажи наоборот»</h2>
+      <p>«Скажи наоборот» — голосовая игра на двоих от Сонграйтера. Запишите короткую фразу, послушайте её задом наперёд и попробуйте повторить необычные звуки. Переверните попытку и узнайте, насколько близко получилось к оригиналу.</p>
+      <p>Играйте рядом на одном телефоне или пригласите друга по ссылке: игра для двоих онлайн открывается в браузере на двух устройствах. Для записи понадобится микрофон и ваше разрешение.</p>
+      <a href="/privacy.html">Конфиденциальность игры</a>
+    </section>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
