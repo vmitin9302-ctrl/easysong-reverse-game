@@ -1,0 +1,11 @@
+{
+  "name": "Скажи наоборот",
+  "short_name": "Наоборот",
+  "lang": "ru",
+  "start_url": "/",
+  "scope": "/",
+  "display": "browser",
+  "background_color": "#f4f2fa",
+  "theme_color": "#7B5CF5",
+  "icons": [{"src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]
+}

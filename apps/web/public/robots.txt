@@ -1,0 +1,12 @@
+User-agent: *
+Disallow: /api/
+Disallow: /admin/
+Disallow: /demo
+Disallow: /debug
+Disallow: /*?*demo=
+Disallow: /*?*debug=
+Disallow: /*?*invite=
+# Keep stats.html crawlable so crawlers can read its noindex meta tag.
+# CSS, JavaScript and verification files must remain accessible.
+
+Sitemap: https://xn--80aadskjyjbavcy.xn--p1ai/sitemap.xml

@@ -722,3 +722,7 @@ h2 {
     transition-duration: 0.001ms !important;
   }
 }
+
+.game-about { max-width: 430px; margin: 0 auto; padding: 0 22px 32px; color: #625b70; font-size: 14px; line-height: 1.6; }
+.game-about h2 { color: #312a40; font-size: 19px; line-height: 1.3; }
+.game-about a { color: #6948e7; }
