@@ -1,5 +1,6 @@
 const apiBase = (process.env.QA_API_URL || 'https://bba4u5rl3fimpjhbrrqo.containers.yandexcloud.net').replace(/\/$/, '');
 const timeoutMs = 20_000;
+const webOrigin = process.env.QA_WEB_URL || 'https://xn--80aadskjyjbavcy.xn--p1ai';
 
 function wav(frequency) {
   const sampleRate = 16_000;
@@ -36,6 +37,10 @@ async function uploadAudio(matchId, round, kind, token, bytes) {
   const idempotencyKey = `qa-${matchId}-${round}-${kind}`;
   const payload = { method: 'POST', token, json: { content_type: 'audio/wav', idempotency_key: idempotencyKey } };
   const slot = await json(`/v1/matches/${matchId}/rounds/${round}/${kind}-upload`, payload);
+  const preflight = await fetch(slot.upload_url, { method: 'OPTIONS', signal: AbortSignal.timeout(timeoutMs), headers: {
+    Origin: webOrigin, 'Access-Control-Request-Method': 'PUT', 'Access-Control-Request-Headers': 'content-type',
+  } });
+  if (!preflight.ok || preflight.headers.get('access-control-allow-origin') !== webOrigin) throw new Error('Audio bucket does not allow the production browser origin');
   await json(`/v1/matches/${matchId}/rounds/${round}/${kind}-upload`, payload);
   const uploaded = await request(slot.upload_url, { method: 'PUT', body: bytes, contentType: 'audio/wav' });
   if (!uploaded.ok) throw new Error(`PUT ${kind}: ${uploaded.status}`);

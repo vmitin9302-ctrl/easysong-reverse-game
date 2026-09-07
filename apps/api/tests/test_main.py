@@ -254,7 +254,8 @@ def test_match_resume_presence_activity_and_authoritative_turn(monkeypatch):
             assert refreshed['player_two_last_seen_at'] is not None
 
             monkeypatch.setattr(main_module, 'signed_put', lambda key, content_type: f'https://upload.invalid/{key}')
-            monkeypatch.setattr(main_module, 'signed_get', lambda key: f'https://download.invalid/{key}')
+            monkeypatch.setattr(main_module, 'validate_uploaded_audio', lambda key: None)
+            monkeypatch.setattr(main_module, 'signed_get', lambda key, expires_in=None: f'https://download.invalid/{key}')
             monkeypatch.setattr(main_module, 'delete_objects', lambda keys: None)
             challenge_path = f"/v1/matches/{created['id']}/rounds/1/challenge-upload"
             upload_body = {'content_type': 'audio/wav', 'idempotency_key': 'challenge-request-1'}

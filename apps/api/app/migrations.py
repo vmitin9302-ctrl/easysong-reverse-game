@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 from sqlalchemy import MetaData, text
 from sqlalchemy.engine import Engine
@@ -26,7 +27,10 @@ def apply_runtime_migrations(engine: Engine, metadata: MetaData) -> None:
         for migration in sorted(MIGRATIONS_DIR.glob('*.sql')):
             if migration.name in applied:
                 continue
-            statements = [statement.strip() for statement in migration.read_text(encoding='utf-8').split(';') if statement.strip()]
+            # Strip line comments before splitting: a semicolon in a rollback
+            # comment must never turn the following commented SQL into executable SQL.
+            source = re.sub(r'--[^\n]*', '', migration.read_text(encoding='utf-8'))
+            statements = [statement.strip() for statement in source.split(';') if statement.strip()]
             for statement in statements:
                 connection.exec_driver_sql(statement)
             connection.execute(text('INSERT INTO schema_migrations(version) VALUES (:version)'), {'version': migration.name})

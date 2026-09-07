@@ -10,6 +10,7 @@ export function remoteTurnAction(
 ): { action: RemoteTurnAction; round?: number; attemptTarget?: AttemptTarget } {
   if (match.status === 'cancelled') return { action: 'cancelled' };
   if (match.forfeited_by) return { action: 'final' };
+  if (options.localFlowLocked) return { action: 'preserve' };
 
   const unseenResult = match.rounds.find((round) => round.status === 'complete' && !round.result_seen);
   if (unseenResult) {
@@ -20,7 +21,6 @@ export function remoteTurnAction(
   }
   if (match.status === 'finished') return { action: 'final' };
   if (match.status === 'waiting_for_player_2') return { action: 'waiting' };
-  if (options.localFlowLocked) return { action: 'preserve' };
 
   const active = match.rounds.find((round) => round.status !== 'complete');
   if (!active) return { action: 'waiting' };

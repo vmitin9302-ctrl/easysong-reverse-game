@@ -36,6 +36,15 @@ env:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: reverse_game_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -53,6 +62,8 @@ jobs:
           cache-dependency-path: apps/api/requirements-dev.txt
       - run: pip install -r apps/api/requirements-dev.txt -r apps/telegram-bot/requirements.txt
       - run: PYTHONPATH=apps/api pytest apps/api/tests -q
+        env:
+          TEST_POSTGRES_URL: postgresql+psycopg://postgres:test-only-password@localhost:5432/reverse_game_test
       - run: PYTHONPATH=apps/telegram-bot pytest apps/telegram-bot/tests -q
       - run: python -m compileall -q apps/api/app apps/api/tests apps/telegram-bot
       - run: bash -n infra/bootstrap-yandex-cloud-shell.sh
@@ -206,6 +217,12 @@ jobs:
             api_url="https://${DEPLOYED_API_ID}.containers.yandexcloud.net"
           fi
           QA_API_URL="$api_url" node ops/qa-production-duel.mjs
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Browser duel with desktop and mobile sessions
+        env:
+          QA_WEB_URL: ${{ env.PUBLIC_WEB_URL }}
+        run: node ops/qa-browser-duel.mjs
 
   summary:
     needs: [configuration, api, web, qa]
