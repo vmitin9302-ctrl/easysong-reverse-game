@@ -124,7 +124,10 @@ export async function uploadRoundAudio(id: string, round: number, kind: 'challen
 }
 export async function downloadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string): Promise<Blob> {
   const result = await playerRequest<{ download_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-audio`, token);
-  const response = await fetchWithDeadline(result.download_url, {}, 20_000); if (!response.ok) throw new Error('Не удалось скачать запись. Повтори загрузку.'); return response.blob();
+  return fetchWithDeadline(result.download_url, {}, 20_000, async (response) => {
+    if (!response.ok) throw new Error('Не удалось скачать запись. Повтори загрузку.');
+    return response.blob();
+  });
 }
 export async function submitRoundGuess(id: string, round: number, token: string, guess: string): Promise<DuelMatch> {
   return playerRequest(`/v1/matches/${id}/rounds/${round}/guess`, token, { method: 'POST', body: JSON.stringify({ guess }) });
