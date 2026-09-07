@@ -10,9 +10,9 @@ const sdkSource=await sdkResponse.text();
 const results=[];
 for(const name of (process.env.QA_ENGINES || 'chromium,webkit').split(',')) {
  console.log('Checking engine: '+name);
- const browser=await ({chromium,webkit}[name]).launch();
+ const browser=await ({chromium,webkit}[name]).launch(name==='chromium'?{args:['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream']}:{});
  try {
-  const context=await browser.newContext({viewport:{width:390,height:844}});
+  const context=await browser.newContext({viewport:{width:390,height:844},...(name==='chromium'?{permissions:['microphone']}:{})});
   await context.route('https://telegram.org/js/telegram-web-app.js', async route=>{
     await new Promise(r=>setTimeout(r,1500));
     await route.fulfill({body:sdkSource,contentType:'text/javascript'});
@@ -44,6 +44,24 @@ for(const name of (process.env.QA_ENGINES || 'chromium,webkit').split(',')) {
   await expect.poll(()=>telegram.evaluate(()=>window.__telegramEvents),{timeout:30000}).toContain('web_app_ready');
   await expect.poll(()=>telegram.evaluate(()=>window.__telegramEvents)).toContain('web_app_expand');
   expect(await telegram.evaluate(()=>window.__violations)).toEqual([]);
+  if(name==='chromium') {
+    await context.addInitScript(()=>{
+      window.__recorders=[];
+      const Native=window.MediaRecorder;
+      window.MediaRecorder=class extends Native { constructor(...args){super(...args);window.__recorders.push(this);} };
+    });
+    const lifecycle=await context.newPage();
+    await lifecycle.goto(origin);
+    await lifecycle.getByRole('button',{name:'📱 Вдвоём на одном устройстве'}).click();
+    await lifecycle.getByRole('button',{name:'Разрешить микрофон'}).click();
+    await lifecycle.locator('.mic-button').click();
+    await expect.poll(()=>lifecycle.evaluate(()=>window.__recorders.at(-1)?.state)).toBe('recording');
+    await lifecycle.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+    await expect(lifecycle.getByText(/Запись остановлена, потому что игра свернулась/)).toBeVisible();
+    expect(await lifecycle.evaluate(()=>window.__recorders.at(-1)?.state)).toBe('inactive');
+    expect(await lifecycle.evaluate(()=>window.__recorders.at(-1)?.stream.getTracks().every(t=>t.readyState==='ended'))).toBe(true);
+    expect(await lifecycle.evaluate(()=>window.__violations)).toEqual([]);
+  }
   const audio=await browser.newPage();
   await audio.route(origin+'/__qa_audio.html', route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html><body></body></html>'}));
   await audio.goto(origin+'/__qa_audio.html');
