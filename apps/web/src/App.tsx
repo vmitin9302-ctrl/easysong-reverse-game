@@ -161,6 +161,16 @@ export default function App() {
   function context() { return ctx.current ??= createAudioContext(); }
   function applyPlayerToken(value: string) { tokenRef.current = value; setToken(value); }
   function releaseMicrophone() { stream.current?.getTracks().forEach((track) => track.stop()); stream.current = null; }
+  function discardRecording() {
+    generation.current += 1;
+    if (recorder.current) {
+      recorder.current.onstop = null;
+      recorder.current.ondataavailable = null;
+      if (recorder.current.state === 'recording') recorder.current.stop();
+      recorder.current = null;
+    }
+    releaseMicrophone(); setRecording(false);
+  }
   async function requestMicrophone() {
     releaseMicrophone();
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone API unavailable');
@@ -265,12 +275,13 @@ export default function App() {
     });
     if (decision.round) setRound(decision.round);
     if (decision.action === 'cancelled') {
+      discardRecording();
       forgetRemote();
       if (next.activity_status === 'temporary_audio_expired' || next.activity_status === 'room_expired') {
         fail('Время ожидания комнаты или хранения записи истекло. Начни новую дуэль.');
       } else { setMode(null); setMatch(null); setStage('choose'); }
     }
-    else if (decision.action === 'final') { if (next.forfeited_by) setForfeitedBy(next.forfeited_by); setStage('final'); if (!completionTracked.current) { completionTracked.current = true; track('game_completed'); } }
+    else if (decision.action === 'final') { discardRecording(); if (next.forfeited_by) setForfeitedBy(next.forfeited_by); setStage('final'); if (!completionTracked.current) { completionTracked.current = true; track('game_completed'); } }
     else if (decision.action === 'waiting') setStage('waiting');
     else if (decision.action === 'enter-phrase') {
       const row = next.rounds.find((item) => item.number === decision.round);
@@ -365,9 +376,11 @@ export default function App() {
   function stop() { if (recorder.current?.state === 'recording') recorder.current.stop(); }
 
   async function process(kind: 'original' | 'attempt', blob: Blob) {
+    const startedGeneration = generation.current;
     setRecording(false); setStage('processing');
     try {
       const decoded = await decodeRecording(context(), blob);
+      if (startedGeneration !== generation.current) return;
       const prepared = prepareSignal(audioBufferToMono(decoded), decoded.sampleRate);
       if (!prepared) throw new Error('Говори чуть громче и не короче секунды.');
       const audio = normalizedGameAudio(context(), prepared.samples, prepared.sampleRate);
@@ -385,9 +398,11 @@ export default function App() {
         activity('sending_attempt');
         await uploadRoundAudio(match.id, round, 'attempt', tokenRef.current, audioBufferToWav(audio));
         const latest = await getDuelMatch(match.id, tokenRef.current);
+        if (startedGeneration !== generation.current) return;
         localFlowLocked.current = false; sync(latest, latest.player); track('attempt_uploaded');
       }
     } catch (error) {
+      if (startedGeneration !== generation.current) return;
       localFlowLocked.current = false;
       fail(error instanceof Error ? error.message : 'Ошибка обработки записи', mode === 'remote' && kind === 'attempt' && attempts.current[responder - 1]
         ? () => process(kind, blob) : undefined);
@@ -395,6 +410,7 @@ export default function App() {
   }
 
   async function confirmOriginal() {
+    const startedGeneration = generation.current;
     if (!challengeAudio.current) { localFlowLocked.current = false; return setStage('original'); }
     if (mode === 'local') {
       localFlowLocked.current = false; setStage('handoff'); track('challenge_confirmed'); return;
@@ -405,8 +421,10 @@ export default function App() {
       activity('sending_challenge');
       await uploadRoundAudio(match.id, round, 'challenge', tokenRef.current, audioBufferToWav(challengeAudio.current));
       const latest = await getDuelMatch(match.id, tokenRef.current);
+      if (startedGeneration !== generation.current) return;
       localFlowLocked.current = false; sync(latest, latest.player); track('challenge_confirmed');
     } catch {
+      if (startedGeneration !== generation.current) return;
       localFlowLocked.current = false; fail('Не удалось отправить запись. Проверь интернет и попробуй ещё раз.', confirmOriginal);
     }
   }
@@ -513,14 +531,8 @@ export default function App() {
     releaseMicrophone(); setMessage(text); setStage('error');
   }
   function reset() {
-    generation.current += 1; matchRef.current = null;
+    discardRecording(); matchRef.current = null;
     errorRecovery.current = null;
-    if (recorder.current) {
-      recorder.current.onstop = null;
-      recorder.current.ondataavailable = null;
-      if (recorder.current.state === 'recording') recorder.current.stop();
-      recorder.current = null;
-    }
     tokenRef.current = ''; setToken(''); revisionRef.current = 0; pollFailures.current = 0; setConnection('online');
     localFlowLocked.current = false; loadingAudio.current = false; loadedChallengeRound.current = null; loadedAttemptRound.current = null;
     completionTracked.current = false;
