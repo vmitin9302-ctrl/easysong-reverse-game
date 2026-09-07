@@ -6,6 +6,10 @@ on:
         description: Add the production game origin to its audio bucket CORS
         type: boolean
         default: false
+      grant_log_reader:
+        description: Grant this game deploy account reader access to its log group
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
@@ -34,4 +38,5 @@ jobs:
       - name: Inspect isolated game resources and summarize logs
         env:
           REPAIR_AUDIO_CORS: ${{ inputs.repair_audio_cors }}
+          GRANT_LOG_READER: ${{ inputs.grant_log_reader }}
         run: python ops/audit-cloud.py

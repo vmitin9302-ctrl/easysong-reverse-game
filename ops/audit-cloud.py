@@ -42,6 +42,8 @@ if revisions:
         environment = image.get('environment', {})
         print(json.dumps({'revision': {key: revision.get(key) for key in ('id', 'status', 'created_at', 'concurrency', 'execution_timeout')}, 'image': image.get('image_url'), 'allowed_origins': environment.get('ALLOWED_ORIGINS')}))
 
+if os.environ.get('GRANT_LOG_READER') == 'true':
+    yc('logging', 'group', 'add-access-binding', 'e23povritvkp4nnsn3pq', '--role', 'logging.reader', '--subject', 'serviceAccount:aje91e1lh5ku368rkp2i')
 logs = yc('logging', 'read', '--group-id', 'e23povritvkp4nnsn3pq', '--since', '24h', '--limit', '1000')
 if logs is not None:
     entries = logs if isinstance(logs, list) else logs.get('entries', [])
