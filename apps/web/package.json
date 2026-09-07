@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node ../../ops/apply-csp.mjs",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest run"
   },

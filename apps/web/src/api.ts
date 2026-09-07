@@ -1,3 +1,4 @@
+import { fetchWithDeadline } from './network';
 import type { ScoreBreakdown } from '@reverse-game/audio-engine';
 
 const baseUrl = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '').replace(/\/$/, '');
@@ -110,7 +111,7 @@ export async function uploadRoundAudio(id: string, round: number, kind: 'challen
         : ['awaiting_guess', 'complete'].includes(row?.status || '');
       if (ready) break; // A prior ready response may have been lost in transit.
       const result = await playerRequest<{ upload_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-upload`, token, { method: 'POST', body: JSON.stringify({ content_type: blob.type, idempotency_key: requestKey }) });
-      const uploaded = await fetch(result.upload_url, { method: 'PUT', headers: { 'Content-Type': blob.type }, body: blob, signal: AbortSignal.timeout(20_000) });
+      const uploaded = await fetchWithDeadline(result.upload_url, { method: 'PUT', headers: { 'Content-Type': blob.type }, body: blob }, 20_000);
       if (!uploaded.ok) throw new Error('Не удалось загрузить запись. Проверь интернет и повтори отправку.');
       await playerRequest(`/v1/matches/${id}/rounds/${round}/${kind}-ready`, token, { method: 'POST', body: '{}' });
       break;
@@ -123,7 +124,10 @@ export async function uploadRoundAudio(id: string, round: number, kind: 'challen
 }
 export async function downloadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string): Promise<Blob> {
   const result = await playerRequest<{ download_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-audio`, token);
-  const response = await fetch(result.download_url, { signal: AbortSignal.timeout(20_000) }); if (!response.ok) throw new Error('Не удалось скачать запись. Повтори загрузку.'); return response.blob();
+  return fetchWithDeadline(result.download_url, {}, 20_000, async (response) => {
+    if (!response.ok) throw new Error('Не удалось скачать запись. Повтори загрузку.');
+    return response.blob();
+  });
 }
 export async function submitRoundGuess(id: string, round: number, token: string, guess: string): Promise<DuelMatch> {
   return playerRequest(`/v1/matches/${id}/rounds/${round}/guess`, token, { method: 'POST', body: JSON.stringify({ guess }) });

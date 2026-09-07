@@ -122,6 +122,14 @@ app.add_middleware(
 async def observe_request(request: Request, call_next):
     started = monotonic()
     status = 500
+    request_id = request.headers.get('x-request-id', '')
+    try:
+        request_id = str(uuid.UUID(request_id))
+    except ValueError:
+        request_id = ''
+    correlation = {'request_id': request_id} if request_id else {}
+    print(json.dumps({**correlation, 'level': 'INFO', 'message': 'http_request_start'}), flush=True)
+    exception_type = None
     try:
         response = await call_next(request)
         status = response.status_code
@@ -130,16 +138,14 @@ async def observe_request(request: Request, call_next):
         # upstream HTTP/1 connection after its response to remove that race.
         response.headers['Connection'] = 'close'
         return response
+    except Exception as error:
+        exception_type = type(error).__name__
+        raise
     finally:
         # Route templates contain no invite tokens, participant credentials, or user text.
         route = getattr(request.scope.get('route'), 'path', '/unmatched')
         # Cloud Logging treats plain stdout/stderr as UNSPECIFIED and drops it at INFO.
-        request_id = request.headers.get('x-request-id', '')
-        try:
-            request_id = str(uuid.UUID(request_id))
-        except ValueError:
-            request_id = ''
-        print(json.dumps({'request_id': request_id, 'level': 'ERROR' if status >= 500 else 'INFO', 'message': 'http_request',
+        print(json.dumps({**correlation, 'exception_type': exception_type, 'level': 'ERROR' if status >= 500 else 'INFO', 'message': 'http_request',
                           'method': request.method, 'route': route, 'status': status,
                           'duration_ms': round((monotonic() - started) * 1000, 1)}), flush=True)
 

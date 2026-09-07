@@ -91,7 +91,7 @@ def test_request_log_is_structured_and_does_not_expose_invite_or_player_token(du
     client.post(f"/v1/matches/join/{created['invite_token']}", json={})
     raw = capsys.readouterr().out
     entries = [json.loads(line) for line in raw.splitlines() if line.startswith('{')]
-    assert any(entry['route'] == '/v1/matches/join/{invite_token}' and entry['level'] == 'INFO' for entry in entries)
+    assert any(entry.get('route') == '/v1/matches/join/{invite_token}' and entry['level'] == 'INFO' for entry in entries)
     assert created['invite_token'] not in raw
     assert created['player_token'] not in raw
 

@@ -1,9 +1,11 @@
 export function createAudioContext(): AudioContext {
-  return new AudioContext({ latencyHint: 'interactive' });
+  const Constructor = globalThis.AudioContext || (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Constructor) throw new Error('Этот браузер не поддерживает обработку аудио. Открой игру в актуальном Safari или Chrome.');
+  return new Constructor({ latencyHint: 'interactive' });
 }
 
 export function selectRecorderMimeType(): string | undefined {
-  if (typeof MediaRecorder === 'undefined') return undefined;
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return undefined;
   const candidates = [
     'audio/webm;codecs=opus',
     'audio/webm',

@@ -18,6 +18,28 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  browser-compatibility:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install chromium webkit
+      - name: Strict CSP and native macOS WebKit audio
+        run: node ops/qa-browser-security.mjs
+        env:
+          QA_REQUIRE_AUDIO: 'true'
+          QA_SECURITY_OUTPUT: work/security-engines.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-compatibility
+          path: work/security-engines.json
+          if-no-files-found: ignore
+
   python:
     runs-on: ubuntu-latest
     services:
