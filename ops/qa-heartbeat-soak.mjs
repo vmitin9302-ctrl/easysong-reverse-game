@@ -13,7 +13,7 @@ try {
       try {
         const response = await fetch(api + path, {method, headers:{'Content-Type':'application/json', ...(token?{'X-Player-Token':token}:{})}, ...(method==='POST'?{body:JSON.stringify(body || {})}:{})});
         durations.push(performance.now()-started);
-        if (!response.ok) failures.push({status:response.status(),operation:path.split('/').at(-1)});
+        if (!response.ok) failures.push({status:response.status,operation:path.split('/').at(-1)});
         return await response.json();
       } catch { failures.push({status:'network',operation:path.split('/').at(-1)}); return null; }
     };
@@ -38,3 +38,4 @@ try {
   if(process.env.QA_SOAK_OUTPUT) await writeFile(process.env.QA_SOAK_OUTPUT,JSON.stringify(result,null,2));
   if(result.failures.length) process.exitCode=1;
 } finally { await browser.close(); }
+
