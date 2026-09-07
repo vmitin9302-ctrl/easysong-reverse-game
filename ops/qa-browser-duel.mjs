@@ -18,6 +18,8 @@ const browser = await chromium.launch({ args: ['--use-fake-device-for-media-stre
 const errors = [];
 const failures = [];
 let plannedOffline = false;
+const offlineRequests = new WeakSet();
+const inFlight = new Set();
 const contexts = [];
 const pages = [];
 try {
@@ -36,7 +38,12 @@ try {
     const page = await context.newPage();
     page.setDefaultTimeout(35000);
     page.on('pageerror', (error) => errors.push(error.message));
-    page.on('requestfailed', (request) => failures.push({ failure: request.failure()?.errorText, path: new URL(request.url()).pathname, plannedOffline }));
+    page.on('request', (request) => { inFlight.add(request); if (plannedOffline) offlineRequests.add(request); });
+    page.on('requestfinished', (request) => inFlight.delete(request));
+    page.on('requestfailed', (request) => {
+      failures.push({ failure: request.failure()?.errorText, path: new URL(request.url()).pathname, plannedOffline: offlineRequests.has(request) });
+      inFlight.delete(request);
+    });
     page.on('response', (response) => {
       if (response.status() >= 400) failures.push({ status: response.status(), path: new URL(response.url()).pathname });
     });
@@ -60,6 +67,7 @@ try {
     await expect(challenger.getByPlaceholder('Например: сегодня отличный день')).toHaveValue(phrase);
     if (round === 1) {
       plannedOffline = true;
+      for (const request of inFlight) offlineRequests.add(request);
       await contexts[0].setOffline(true);
       await expect(challenger.getByText('🟡 Переподключаемся…')).toBeVisible();
       await contexts[0].setOffline(false);
@@ -103,7 +111,7 @@ try {
   // Neither is a failed game action. Keep them visible in the report.
   const unexpected = failures.filter((item) => !item.plannedOffline && item.failure !== 'net::ERR_ABORTED' && !(item.status === 409 && item.path.endsWith('/activity')));
   expect(unexpected).toEqual([]);
-  console.log(JSON.stringify({ passed: true, scenarios: ['desktop + mobile Chromium', 'invite', 'draft heartbeat', 'MediaRecorder WAV upload', 'reverse playback', 'refresh participant resume', 'two rounds', 'shared scores', 'finish'], errors, unexpected, expectedNetworkEvents: failures }));
+  console.log(JSON.stringify({ passed: true, scenarios: ['desktop + mobile Chromium', 'invite', 'draft heartbeat', 'offline reconnect', 'MediaRecorder WAV upload', 'reverse playback', 'refresh participant resume', 'two rounds', 'shared scores', 'finish'], errors, unexpected, expectedNetworkEvents: failures }));
 } catch (error) {
   for (const [index, page] of pages.entries()) {
     await page.screenshot({ path: path.join(output, `failure-${index}.png`), fullPage: true }).catch(() => {});
