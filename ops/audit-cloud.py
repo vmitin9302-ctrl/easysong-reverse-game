@@ -21,7 +21,7 @@ def yc(*args):
     return json.loads(result.stdout or '{}')
 
 
-bucket = yc('storage', 'bucket', 'get', '--name', BUCKET)
+bucket = yc('storage', 'bucket', 'get', '--name', BUCKET, '--full')
 if bucket is None:
     raise SystemExit(1)
 print(json.dumps({'audio_bucket': {key: bucket.get(key) for key in ('name', 'cors', 'lifecycle_rules', 'anonymous_access_flags')}}))
@@ -32,7 +32,7 @@ if os.environ.get('REPAIR_AUDIO_CORS') == 'true':
     rule = 'allowed-methods=[method-get,method-put,method-head],allowed-origins=[' + ','.join(sorted(origins)) + '],allowed-headers=[content-type],expose-headers=[etag],max-age-seconds=600'
     if yc('storage', 'bucket', 'update', '--name', BUCKET, '--cors', rule) is None:
         raise SystemExit(1)
-    bucket = yc('storage', 'bucket', 'get', '--name', BUCKET)
+    bucket = yc('storage', 'bucket', 'get', '--name', BUCKET, '--full')
     print(json.dumps({'repaired_audio_cors': bucket.get('cors')}))
 
 revisions = yc('serverless', 'container', 'revision', 'list', '--container-id', 'bba4u5rl3fimpjhbrrqo')
