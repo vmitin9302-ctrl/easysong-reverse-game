@@ -14,7 +14,7 @@ def yc(*args):
     result = subprocess.run(['yc', *args, '--folder-id', FOLDER, '--format', 'json'], capture_output=True, text=True)
     if result.returncode:
         # Never publish raw cloud responses, environment values, tokens, or user logs.
-        safe_error = result.stderr.replace(os.environ.get('YC_TOKEN', 'UNSET_TOKEN'), '[REDACTED]')
+        safe_error = result.stderr.replace(os.environ.get('YC_IAM_TOKEN', 'UNSET_TOKEN'), '[REDACTED]')
         safe_error = re.sub(r'(?:Bearer|token[=:])\s*\S+', '[REDACTED]', safe_error, flags=re.I)
         print(json.dumps({'command': list(args[:3]), 'failed': True, 'error': safe_error[:800]}))
         return None

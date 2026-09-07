@@ -25,7 +25,7 @@ jobs:
             if (!response.ok) throw new Error(`Cloud authentication failed: ${response.status}`);
             const result = await response.json();
             core.setSecret(result.access_token);
-            core.exportVariable('YC_TOKEN', result.access_token);
+            core.exportVariable('YC_IAM_TOKEN', result.access_token);
       - name: Install official Cloud CLI
         run: |
           curl --fail --silent --show-error https://storage.yandexcloud.net/yandexcloud-yc/install.sh -o /tmp/install-yc.sh
