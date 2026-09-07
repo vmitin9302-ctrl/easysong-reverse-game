@@ -5,11 +5,22 @@ const ANONYMOUS_ID_KEY = 'reverse_game_anonymous_id';
 
 export const hasApi = Boolean(baseUrl);
 
+export class ApiError extends Error {
+  constructor(public status: number, public detail: string) {
+    super(status === 410 ? 'Время хранения комнаты или записи истекло. Создай новую дуэль.'
+      : status === 422 ? 'Проверь введённый текст или запиши аудио заново.'
+        : status === 403 ? 'Не удалось подтвердить место игрока. Открой своё приглашение.'
+          : status === 409 ? 'Ход уже изменился. Обновляем состояние дуэли.'
+            : 'Сервис временно недоступен. Попробуй ещё раз.');
+  }
+}
+
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 15_000);
   const abort = () => controller.abort();
   init.signal?.addEventListener('abort', abort, { once: true });
+  if (init.signal?.aborted) controller.abort();
   try {
     const response = await fetch(`${baseUrl}${path}`, {
       ...init,
@@ -20,7 +31,10 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
         ...(init.headers || {}),
       },
     });
-    if (!response.ok) throw new Error(`API ${response.status}`);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new ApiError(response.status, typeof body.detail === 'string' ? body.detail : '');
+    }
     return response.json() as Promise<T>;
   } catch (error) {
     if (controller.signal.aborted && !init.signal?.aborted) throw new Error('API timeout');
@@ -62,7 +76,9 @@ export async function createDuelMatch(sessionId: string | null): Promise<DuelMat
   return request('/v1/matches', { method: 'POST', body: JSON.stringify({ session_id: sessionId }) });
 }
 export async function joinDuelMatch(inviteToken: string, participantToken?: string): Promise<DuelMatch> {
-  return request(`/v1/matches/join/${encodeURIComponent(inviteToken)}`, { method: 'POST', body: JSON.stringify({ participant_token: participantToken || null }) });
+  const key = `reverse_duel_join_${inviteToken}`;
+  const requestToken = memoryIdempotencyKeys.get(key) || idempotencyKey(key);
+  return request(`/v1/matches/join/${encodeURIComponent(inviteToken)}`, { method: 'POST', body: JSON.stringify({ participant_token: participantToken || null, join_request_token: requestToken }) });
 }
 export async function getDuelMatch(id: string, token: string): Promise<DuelMatch> {
   return playerRequest(`/v1/matches/${id}`, token);
@@ -85,15 +101,29 @@ export async function submitRoundPhrase(id: string, round: number, token: string
 export async function uploadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string, blob: Blob): Promise<void> {
   const storageKey = `reverse_duel_idem_${id}_${round}_${kind}`;
   const requestKey = memoryIdempotencyKeys.get(storageKey) || idempotencyKey(storageKey);
-  const result = await playerRequest<{ upload_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-upload`, token, { method: 'POST', body: JSON.stringify({ content_type: blob.type, idempotency_key: requestKey }) });
-  const uploaded = await fetch(result.upload_url, { method: 'PUT', headers: { 'Content-Type': blob.type }, body: blob });
-  if (!uploaded.ok) throw new Error('Audio upload failed');
-  await playerRequest(`/v1/matches/${id}/rounds/${round}/${kind}-ready`, token, { method: 'POST', body: '{}' });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const state = await getDuelMatch(id, token);
+      const row = state.rounds.find((item) => item.number === round);
+      const ready = kind === 'challenge'
+        ? ['awaiting_attempt', 'awaiting_guess', 'complete'].includes(row?.status || '')
+        : ['awaiting_guess', 'complete'].includes(row?.status || '');
+      if (ready) break; // A prior ready response may have been lost in transit.
+      const result = await playerRequest<{ upload_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-upload`, token, { method: 'POST', body: JSON.stringify({ content_type: blob.type, idempotency_key: requestKey }) });
+      const uploaded = await fetch(result.upload_url, { method: 'PUT', headers: { 'Content-Type': blob.type }, body: blob, signal: AbortSignal.timeout(20_000) });
+      if (!uploaded.ok) throw new Error('Не удалось загрузить запись. Проверь интернет и повтори отправку.');
+      await playerRequest(`/v1/matches/${id}/rounds/${round}/${kind}-ready`, token, { method: 'POST', body: '{}' });
+      break;
+    } catch (error) {
+      if (attempt >= 2 || (error instanceof ApiError && error.status < 500)) throw error;
+      await new Promise((resolve) => window.setTimeout(resolve, 500 * 2 ** attempt));
+    }
+  }
   forgetIdempotencyKey(storageKey);
 }
 export async function downloadRoundAudio(id: string, round: number, kind: 'challenge' | 'attempt', token: string): Promise<Blob> {
   const result = await playerRequest<{ download_url: string }>(`/v1/matches/${id}/rounds/${round}/${kind}-audio`, token);
-  const response = await fetch(result.download_url); if (!response.ok) throw new Error('Audio download failed'); return response.blob();
+  const response = await fetch(result.download_url, { signal: AbortSignal.timeout(20_000) }); if (!response.ok) throw new Error('Не удалось скачать запись. Повтори загрузку.'); return response.blob();
 }
 export async function submitRoundGuess(id: string, round: number, token: string, guess: string): Promise<DuelMatch> {
   return playerRequest(`/v1/matches/${id}/rounds/${round}/guess`, token, { method: 'POST', body: JSON.stringify({ guess }) });

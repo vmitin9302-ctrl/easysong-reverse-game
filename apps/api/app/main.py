@@ -20,7 +20,7 @@ from .db import Base, engine, get_db
 from .models import AnalyticsEvent, DuelMatch, DuelRound, GameResult, GameSession, OutboundClick, ShareLink
 from .migrations import apply_runtime_migrations
 from .settings import settings
-from .storage import delete_objects, signed_get, signed_put
+from .storage import delete_objects, signed_get, signed_put, validate_uploaded_audio
 from .telegram_auth import TelegramAuthError, validate_init_data
 
 
@@ -85,6 +85,7 @@ class AudioUploadRequest(BaseModel):
 
 class JoinMatchRequest(BaseModel):
     participant_token: str | None = Field(default=None, min_length=16, max_length=96)
+    join_request_token: str | None = Field(default=None, min_length=32, max_length=96)
 
 
 class ActivityUpdate(BaseModel):
@@ -123,9 +124,9 @@ def require_database(db: Session | None) -> Session:
 
 
 def match_player(match: DuelMatch, token: str | None) -> int:
-    if token and secrets.compare_digest(token, match.player_one_secret):
+    if token and secrets.compare_digest(token.encode('utf-8'), match.player_one_secret.encode('utf-8')):
         return 1
-    if token and match.player_two_secret and secrets.compare_digest(token, match.player_two_secret):
+    if token and match.player_two_secret and secrets.compare_digest(token.encode('utf-8'), match.player_two_secret.encode('utf-8')):
         return 2
     raise HTTPException(status_code=403, detail='Invalid player token')
 
@@ -171,7 +172,7 @@ def round_view(row: DuelRound, player: int) -> dict:
         'guess': row.guess_text if player == row.responder or revealed else None,
         'score': row.score,
         'audio_expires_at': row.audio_expires_at,
-        'attempt_available': bool(row.attempt_object_key),
+        'attempt_available': bool(row.attempt_object_key) and not has_expired(row.audio_expires_at),
         'result_seen': result_seen,
     }
 
@@ -235,11 +236,22 @@ def storage_put_url(key: str, content_type: str) -> str:
         raise HTTPException(status_code=503, detail='Temporary audio storage is unavailable') from exc
 
 
-def storage_get_url(key: str) -> str:
+def storage_get_url(key: str, expires_at: datetime) -> str:
     try:
-        return signed_get(key)
+        expiry = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=UTC)
+        return signed_get(key, max(1, int((expiry - datetime.now(UTC)).total_seconds())))
     except Exception as exc:
         raise HTTPException(status_code=503, detail='Temporary audio storage is unavailable') from exc
+
+
+def ensure_uploaded_audio(row: DuelRound, key: str) -> None:
+    ensure_audio_available(row)
+    try:
+        validate_uploaded_audio(key)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail='Audio is invalid or incomplete; record it again') from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail='Audio upload could not be verified; retry the upload') from exc
 
 
 @app.post('/v1/matches', status_code=201)
@@ -273,9 +285,10 @@ def join_match(invite_token: str, payload: JoinMatchRequest, db: Session | None 
         raise HTTPException(status_code=404, detail='Match not found')
     if match.status == 'cancelled':
         raise HTTPException(status_code=410, detail='Match was cancelled')
-    if payload.participant_token:
+    resume_token = payload.participant_token or payload.join_request_token
+    if resume_token:
         try:
-            player = match_player(match, payload.participant_token)
+            player = match_player(match, resume_token)
         except HTTPException:
             player = 0
         if player:
@@ -283,12 +296,12 @@ def join_match(invite_token: str, payload: JoinMatchRequest, db: Session | None 
             else: match.player_two_last_seen_at = datetime.now(UTC)
             bump(match)
             db.commit()
-            return {**match_view(db, match, player), 'player_token': payload.participant_token}
+            return {**match_view(db, match, player), 'player_token': resume_token}
     if has_expired(match.invite_expires_at):
         raise HTTPException(status_code=410, detail='Invite has expired')
     if match.player_two_secret:
         raise HTTPException(status_code=409, detail='Match already has two players')
-    match.player_two_secret = secrets.token_urlsafe(32)
+    match.player_two_secret = payload.join_request_token or secrets.token_urlsafe(32)
     match.status = 'round_1'
     match.current_round = 1
     match.active_player = 1
@@ -307,6 +320,8 @@ def cancel_match(match_id: uuid.UUID, x_player_token: str | None = Header(None),
     if match_player(match, x_player_token) != 1:
         raise HTTPException(status_code=403, detail='Only player one can cancel the match')
     if match.status != 'waiting_for_player_2' or match.player_two_secret:
+        if match.status == 'cancelled':
+            return {'cancelled': True}
         raise HTTPException(status_code=409, detail='A started match cannot be cancelled')
     match.status = 'cancelled'
     match.finished_at = datetime.now(UTC)
@@ -322,6 +337,8 @@ def forfeit_match(match_id: uuid.UUID, x_player_token: str | None = Header(None)
     if match is None:
         raise HTTPException(status_code=404, detail='Match not found')
     player = match_player(match, x_player_token)
+    if match.status == f'forfeited_by_{player}':
+        return match_view(db, match, player)
     if match.status not in ('round_1', 'round_2') or not match.player_two_secret:
         raise HTTPException(status_code=409, detail='Only an active match can be forfeited')
     rounds = db.query(DuelRound).filter(DuelRound.match_id == match.id).all()
@@ -387,10 +404,28 @@ def rematch(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: 
 @app.get('/v1/matches/{match_id}')
 def get_match(match_id: uuid.UUID, x_player_token: str | None = Header(None), db: Session | None = Depends(get_db)) -> dict:
     db = require_database(db)
-    match = db.get(DuelMatch, match_id)
-    if match is None:
-        raise HTTPException(status_code=404, detail='Match not found')
-    return match_view(db, match, match_player(match, x_player_token))
+    match = locked_match(db, match_id)
+    player = match_player(match, x_player_token)
+    rows = db.query(DuelRound).filter(DuelRound.match_id == match.id).all()
+    expired_rows = [row for row in rows if row.audio_expires_at and has_expired(row.audio_expires_at)]
+    keys = [key for row in expired_rows for key in (row.challenge_object_key, row.attempt_object_key) if key]
+    expired_turn = any(row.round_number == match.current_round and row.status in ('awaiting_attempt', 'awaiting_guess') for row in expired_rows)
+    expired_invite = match.status == 'waiting_for_player_2' and has_expired(match.invite_expires_at)
+    if expired_turn or expired_invite:
+        match.status = 'cancelled'
+        match.finished_at = datetime.now(UTC)
+    for row in expired_rows:
+        row.challenge_object_key = None
+        row.attempt_object_key = None
+        row.audio_expires_at = None
+    if expired_rows or expired_invite:
+        bump(match, activity='temporary_audio_expired' if expired_turn else 'room_expired')
+        db.commit()
+        try:
+            delete_objects(keys)
+        except Exception:
+            logger.exception('Failed to delete expired duel audio; lifecycle is the fallback')
+    return match_view(db, match, player)
 
 
 @app.post('/v1/matches/{match_id}/heartbeat')
@@ -468,6 +503,7 @@ def challenge_ready(match_id: uuid.UUID, number: int, x_player_token: str | None
     if round_row.status == 'awaiting_attempt': return {'accepted': True, 'revision': match.revision}
     ensure_current_turn(match, number, player)
     if round_row.status != 'awaiting_challenge': raise HTTPException(status_code=409, detail='Challenge is not allowed now')
+    ensure_uploaded_audio(round_row, round_row.challenge_object_key)
     round_row.status = 'awaiting_attempt'; match.active_player = round_row.responder; bump(match, activity='challenge_ready', player=player); db.commit(); return {'accepted': True, 'revision': match.revision}
 
 
@@ -480,7 +516,7 @@ def challenge_audio(match_id: uuid.UUID, number: int, x_player_token: str | None
     if player != round_row.responder or round_row.status != 'awaiting_attempt' or not round_row.challenge_object_key: raise HTTPException(status_code=409, detail='Audio is not available')
     ensure_current_turn(match, number, player)
     ensure_audio_available(round_row)
-    return {'download_url': storage_get_url(round_row.challenge_object_key), 'expires_at': round_row.audio_expires_at}
+    return {'download_url': storage_get_url(round_row.challenge_object_key, round_row.audio_expires_at), 'expires_at': round_row.audio_expires_at}
 
 
 @app.post('/v1/matches/{match_id}/rounds/{number}/attempt-upload')
@@ -514,6 +550,7 @@ def attempt_ready(match_id: uuid.UUID, number: int, x_player_token: str | None =
     if round_row.status == 'awaiting_guess': return {'accepted': True, 'revision': match.revision}
     ensure_current_turn(match, number, player)
     if round_row.status != 'awaiting_attempt': raise HTTPException(status_code=409, detail='Attempt is not allowed now')
+    ensure_uploaded_audio(round_row, round_row.attempt_object_key)
     round_row.status = 'awaiting_guess'; match.active_player = round_row.responder; bump(match, activity='guessing_phrase', player=round_row.responder); db.commit(); return {'accepted': True, 'revision': match.revision}
 
 
@@ -526,7 +563,7 @@ def attempt_audio(match_id: uuid.UUID, number: int, x_player_token: str | None =
     if player not in (round_row.challenger, round_row.responder): raise HTTPException(status_code=403, detail='Attempt is not available')
     if round_row.status not in ('awaiting_guess', 'complete') or not round_row.attempt_object_key: raise HTTPException(status_code=409, detail='Attempt is not available')
     ensure_audio_available(round_row)
-    return {'download_url': storage_get_url(round_row.attempt_object_key), 'expires_at': round_row.audio_expires_at}
+    return {'download_url': storage_get_url(round_row.attempt_object_key, round_row.audio_expires_at), 'expires_at': round_row.audio_expires_at}
 
 
 @app.post('/v1/matches/{match_id}/rounds/{number}/guess')

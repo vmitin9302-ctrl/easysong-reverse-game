@@ -60,6 +60,11 @@ export default function App() {
   const revisionRef = useRef(0);
   const pollFailures = useRef(0);
   const completionTracked = useRef(false);
+  const phraseDraftRound = useRef<string | null>(null);
+  const matchRef = useRef<DuelMatch | null>(null);
+  const generation = useRef(0);
+  const errorRecovery = useRef<(() => Promise<void>) | null>(null);
+  const creatingRoom = useRef(false);
 
   const player = match?.player ?? 1;
   const challenger = round;
@@ -110,7 +115,12 @@ export default function App() {
   useEffect(() => {
     if (!match || !token || match.status === 'cancelled' || match.status === 'finished' || match.status.startsWith('forfeited_by_')) return;
     let stopped = false;
-    const refresh = () => void getDuelMatch(match.id, token).then((next) => {
+    let refreshing = false;
+    let heartbeating = false;
+    const refresh = () => {
+      if (stopped || refreshing) return;
+      refreshing = true;
+      void getDuelMatch(match.id, token).then((next) => {
       if (stopped) return;
       const wasOffline = pollFailures.current > 0;
       pollFailures.current = 0;
@@ -120,22 +130,31 @@ export default function App() {
       }
       if (next.revision > revisionRef.current) sync(next, next.player);
     }).catch(() => {
+      if (stopped) return;
       pollFailures.current += 1;
       if (pollFailures.current >= 2) setConnection('reconnecting');
-    });
-    const heartbeat = () => void heartbeatDuelMatch(match.id, token).catch(() => {
+    }).finally(() => { refreshing = false; });
+    };
+    const heartbeat = () => {
+      if (stopped || heartbeating) return;
+      heartbeating = true;
+      void heartbeatDuelMatch(match.id, token).catch(() => {
+      if (stopped) return;
       pollFailures.current += 1;
       if (pollFailures.current >= 2) setConnection('reconnecting');
-    });
+    }).finally(() => { heartbeating = false; });
+    };
     const reconnectNow = () => { heartbeat(); refresh(); };
     const refreshWhenVisible = () => { if (document.visibilityState === 'visible') reconnectNow(); };
     const timer = window.setInterval(refresh, 1000);
     const heartbeatTimer = window.setInterval(heartbeat, 5000);
     window.addEventListener('focus', reconnectNow);
+    window.addEventListener('online', reconnectNow);
     document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       stopped = true; window.clearInterval(timer); window.clearInterval(heartbeatTimer);
       window.removeEventListener('focus', reconnectNow); document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.removeEventListener('online', reconnectNow);
     };
   }, [match?.id, match?.status, token]);
 
@@ -176,7 +195,10 @@ export default function App() {
     try {
       const restored = await getDuelMatch(saved.id, saved.token);
       setMode('remote'); setMatch(restored); applyPlayerToken(saved.token); sync(restored, restored.player);
-    } catch { forgetRemote(); }
+    } catch {
+      setMode('remote'); applyPlayerToken(saved.token);
+      fail('Не удалось восстановить дуэль. Проверь интернет и обнови страницу — место игрока сохранено.');
+    }
   }
 
   function readRemote(): SavedRemoteSession | null {
@@ -206,6 +228,8 @@ export default function App() {
   }
 
   async function createRoom() {
+    if (creatingRoom.current) return;
+    creatingRoom.current = true;
     setMode('remote'); setStage('waiting');
     track('online_duel_started'); track('game_started');
     try {
@@ -213,6 +237,7 @@ export default function App() {
       const playerToken = created.player_token!;
       setMatch(created); applyPlayerToken(playerToken); rememberRemote(created, playerToken); track('match_created', { mode: 'remote' });
     } catch { fail('Не удалось создать комнату. Проверь соединение и попробуй ещё раз.'); }
+    finally { creatingRoom.current = false; }
   }
 
   async function join(invite: string, resumeToken?: string) {
@@ -231,7 +256,7 @@ export default function App() {
 
   function sync(next: DuelMatch, currentPlayer = player) {
     if (next.revision < revisionRef.current) return;
-    revisionRef.current = next.revision; setMatch(next); setScores(next.scores);
+    revisionRef.current = next.revision; matchRef.current = next; setMatch(next); setScores(next.scores);
     const decision = remoteTurnAction(next, currentPlayer, {
       localFlowLocked: localFlowLocked.current || loadingAudio.current,
       hasMicrophone: Boolean(stream.current),
@@ -239,12 +264,22 @@ export default function App() {
       loadedAttemptRound: restoredAttempt.current ? loadedAttemptRound.current : null,
     });
     if (decision.round) setRound(decision.round);
-    if (decision.action === 'cancelled') { forgetRemote(); setMode(null); setMatch(null); setStage('choose'); }
+    if (decision.action === 'cancelled') {
+      forgetRemote();
+      if (next.activity_status === 'temporary_audio_expired' || next.activity_status === 'room_expired') {
+        fail('Время ожидания комнаты или хранения записи истекло. Начни новую дуэль.');
+      } else { setMode(null); setMatch(null); setStage('choose'); }
+    }
     else if (decision.action === 'final') { if (next.forfeited_by) setForfeitedBy(next.forfeited_by); setStage('final'); if (!completionTracked.current) { completionTracked.current = true; track('game_completed'); } }
     else if (decision.action === 'waiting') setStage('waiting');
     else if (decision.action === 'enter-phrase') {
       const row = next.rounds.find((item) => item.number === decision.round);
-      setPhraseText(row?.phrase || ''); setStage('phrase');
+      const draftKey = `${next.id}:${decision.round}`;
+      if (phraseDraftRound.current !== draftKey) {
+        phraseDraftRound.current = draftKey;
+        setPhraseText(row?.phrase || '');
+      }
+      setStage('phrase');
     } else if (decision.action === 'permission') setStage('permission');
     else if (decision.action === 'record-original') setStage('original');
     else if (decision.action === 'listen') setStage('listen');
@@ -256,6 +291,7 @@ export default function App() {
   }
 
   async function submitPhrase() {
+    if (localFlowLocked.current) return;
     const phrase = phraseText.trim();
     if (!phrase) return setMessage('Напиши слово или короткую фразу.');
     if (!match) return;
@@ -285,9 +321,12 @@ export default function App() {
 
   async function loadAudio(id: string, number: number, kind: 'challenge' | 'attempt', target?: 'guess' | 'watch-guess' | 'round-result') {
     if (loadingAudio.current) return;
+    localFlowLocked.current = false;
     loadingAudio.current = true; audioRetry.current = { number, kind, target };
+    const startedGeneration = generation.current;
     try {
       const decoded = await decodeRecording(context(), await downloadRoundAudio(id, number, kind, tokenRef.current));
+      if (startedGeneration !== generation.current || matchRef.current?.forfeited_by || matchRef.current?.status === 'cancelled') return;
       if (kind === 'challenge') {
         challengeAudio.current = decoded; loadedChallengeRound.current = number; setStage('listen');
       } else {
@@ -295,11 +334,14 @@ export default function App() {
       }
       setPlaybackError('');
     } catch {
+      if (startedGeneration !== generation.current || matchRef.current?.forfeited_by) return;
+      localFlowLocked.current = true;
       setPlaybackError('Не удалось загрузить запись. Проверь интернет и нажми «Загрузить ещё раз».'); setStage('audio-error');
     } finally { loadingAudio.current = false; }
   }
 
   async function start(kind: 'original' | 'attempt') {
+    if (micBusy || recording || recorder.current?.state === 'recording') return;
     localFlowLocked.current = true; recordingKind.current = kind; setMicBusy(true);
     try {
       const activeStream = stream.current ?? await requestMicrophone();
@@ -346,7 +388,9 @@ export default function App() {
         localFlowLocked.current = false; sync(latest, latest.player); track('attempt_uploaded');
       }
     } catch (error) {
-      localFlowLocked.current = false; fail(error instanceof Error ? error.message : 'Ошибка обработки записи');
+      localFlowLocked.current = false;
+      fail(error instanceof Error ? error.message : 'Ошибка обработки записи', mode === 'remote' && kind === 'attempt' && attempts.current[responder - 1]
+        ? () => process(kind, blob) : undefined);
     }
   }
 
@@ -363,7 +407,7 @@ export default function App() {
       const latest = await getDuelMatch(match.id, tokenRef.current);
       localFlowLocked.current = false; sync(latest, latest.player); track('challenge_confirmed');
     } catch {
-      localFlowLocked.current = false; fail('Не удалось отправить запись. Проверь интернет и попробуй ещё раз.');
+      localFlowLocked.current = false; fail('Не удалось отправить запись. Проверь интернет и попробуй ещё раз.', confirmOriginal);
     }
   }
 
@@ -391,6 +435,7 @@ export default function App() {
   }
 
   async function submitGuess() {
+    if (localFlowLocked.current) return;
     const guess = guessText.trim();
     if (!guess) return setMessage('Напиши, какую фразу ты услышал.');
     if (!match) return;
@@ -406,7 +451,8 @@ export default function App() {
   }
 
   async function continueAfterResult() {
-    if (!match) return;
+    if (!match || localFlowLocked.current) return;
+    localFlowLocked.current = true;
     setSubmitting(true); setMessage('');
     try {
       const next = await markRoundResultSeen(match.id, round, tokenRef.current);
@@ -414,7 +460,7 @@ export default function App() {
       loadedChallengeRound.current = null; loadedAttemptRound.current = null; audioRetry.current = null;
       setPhraseText(''); setGuessText(''); setPlaybackError(''); sync(next, next.player);
     } catch { setMessage('Не удалось продолжить. Проверь соединение и попробуй ещё раз.'); }
-    finally { setSubmitting(false); }
+    finally { localFlowLocked.current = false; setSubmitting(false); }
   }
 
   function nextLocalRound() {
@@ -458,14 +504,27 @@ export default function App() {
     catch { fail('Не удалось завершить матч. Проверь интернет и попробуй ещё раз.'); }
   }
 
-  function fail(text: string) {
-    localFlowLocked.current = false; loadingAudio.current = false; setMicBusy(false); setSubmitting(false); setRecording(false);
+  function fail(text: string, retry?: () => Promise<void>) {
+    errorRecovery.current = retry || (matchRef.current && matchRef.current.status !== 'cancelled' ? async () => {
+      const current = matchRef.current;
+      if (current) sync(await getDuelMatch(current.id, tokenRef.current));
+    } : null);
+    localFlowLocked.current = true; loadingAudio.current = false; setMicBusy(false); setSubmitting(false); setRecording(false);
     releaseMicrophone(); setMessage(text); setStage('error');
   }
   function reset() {
+    generation.current += 1; matchRef.current = null;
+    errorRecovery.current = null;
+    if (recorder.current) {
+      recorder.current.onstop = null;
+      recorder.current.ondataavailable = null;
+      if (recorder.current.state === 'recording') recorder.current.stop();
+      recorder.current = null;
+    }
     tokenRef.current = ''; setToken(''); revisionRef.current = 0; pollFailures.current = 0; setConnection('online');
     localFlowLocked.current = false; loadingAudio.current = false; loadedChallengeRound.current = null; loadedAttemptRound.current = null;
     completionTracked.current = false;
+    phraseDraftRound.current = null;
     releaseMicrophone(); forgetRemote(); setMode(null); setStage('choose'); setRound(1); setScores([null, null]); setForfeitedBy(null); setMatch(null);
     setPhraseText(''); setGuessText(''); setMessage(''); setInviteNotice(''); setPlaybackError('');
     originals.current = [null, null]; attempts.current = [null, null]; challengeAudio.current = null; restoredAttempt.current = null; audioRetry.current = null;
@@ -531,7 +590,11 @@ export default function App() {
 
       {stage === 'final' && <div className="screen"><div className="result-head"><p className="eyebrow">{mode === 'remote' ? 'ОНЛАЙН-ДУЭЛЬ ЗАВЕРШЕНА' : 'ИГРА ЗАВЕРШЕНА'}</p><h2>{winner}</h2></div>{mode === 'remote' && <><div className="duel-scores"><div><span>Игрок 1</span><strong>{scores[0] ?? '—'}{scores[0] !== null && '%'}</strong></div><div><span>Игрок 2</span><strong>{scores[1] ?? '—'}{scores[1] !== null && '%'}</strong></div></div><div className="round-answers">{match?.rounds.filter((item) => item.status === 'complete').map((item) => <div className="round-answer" key={item.number}><span>Раунд {item.number} · угадывал Игрок {item.responder}</span><strong>«{item.phrase}»</strong><p>Ответ: «{item.guess}» · {item.score}%</p></div>)}</div></>}{mode === 'local' && <div className="recording-replay"><h3>Послушать ещё раз</h3>{[1, 2].map((number) => <div className="recording-replay__player" key={number}><strong>Игрок {number}</strong><div><button disabled={playing || !originals.current[number - 1]} onClick={() => void playSaved('original', number)}>▶ Что сказал</button><button disabled={playing || !attempts.current[number - 1]} onClick={() => void playSaved('attempt', number)}>▶ Как повторил</button></div></div>)}{playbackError && <p className="audio-warning">{playbackError}</p>}<p>Записи доступны только на этом устройстве до выхода из игры.</p></div>}<button className="button button--secondary" onClick={() => void share()}>Поделиться результатом</button><button className="button button--ghost" onClick={exitFinishedMatch}>Выйти</button><div className="easysong-card"><div className="easysong-card__icon">♫</div><div><h3>А теперь преврати свою идею в песню</h3><p>Создавай песни, картинки, открытки и не только с Сонграйтером / EasySong.</p></div><a className="button button--white" href={API ? `${API}/go/easysong?source=game&campaign=reverse_duel` : 'https://easysong.ru/webapp/auth?next=%2Fwebapp'} onClick={() => track('easysong_clicked')}>Попробовать EasySong →</a></div></div>}
 
-      {stage === 'error' && <Screen><div className="error-icon">!</div><h2>Не получилось</h2><p className="lead">{message}</p><button className="button button--primary" onClick={reset}>В начало</button></Screen>}
+      {stage === 'error' && <Screen><div className="error-icon">!</div><h2>Не получилось</h2><p className="lead">{message}</p>{errorRecovery.current && <button className="button button--primary" disabled={submitting} onClick={() => {
+        const retry = errorRecovery.current; if (!retry || submitting) return;
+        localFlowLocked.current = false; setSubmitting(true);
+        void retry().catch(() => fail('Соединение пока не восстановлено. Попробуй ещё раз.', retry)).finally(() => setSubmitting(false));
+      }}>Попробовать ещё раз</button>}<button className="button button--ghost" onClick={reset}>В начало</button></Screen>}
     </section>
     {canForfeit && <button className="forfeit-button" onClick={() => void forfeit()}>Выйти из дуэли — сдаться</button>}
     <a className="telegram-banner" data-analytics="telegram_bot_banner" href={telegramBannerUrl} target="_blank" rel="noreferrer" onClick={() => track('telegram_banner_clicked', { section: 'footer', element: 'telegram_bot_banner', action: 'click' })}><span className="telegram-banner__icon">✈</span><span><strong>«Скажи наоборот» в Telegram</strong><small>Открой бота и начни новую дуэль</small></span><b>Открыть →</b></a>

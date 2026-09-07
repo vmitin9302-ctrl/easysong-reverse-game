@@ -185,7 +185,7 @@ ensure_audio_bucket() {
       >/dev/null
   fi
   local website_origin="https://${WEB_BUCKET}.website.yandexcloud.net"
-  local configured_origin="${PUBLIC_WEB_URL:-$website_origin}"
+  local configured_origin="${PUBLIC_WEB_URL:-https://xn--80aadskjyjbavcy.xn--p1ai}"
   configured_origin="${configured_origin%/}"
   [[ "$configured_origin" =~ ^https://[^/]+$ ]] || fail "PUBLIC_WEB_URL must be an HTTPS origin without a path."
   local allowed_origins="[${website_origin}]"
