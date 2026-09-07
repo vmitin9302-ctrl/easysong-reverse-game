@@ -17,8 +17,18 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - run: npx playwright install --with-deps chromium webkit
-      - name: Strict CSP and audio engine compatibility
+
+  browser-compatibility:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install chromium webkit
+      - name: Strict CSP and native macOS WebKit audio
         run: node ops/qa-browser-security.mjs
         env:
           QA_REQUIRE_AUDIO: 'true'
