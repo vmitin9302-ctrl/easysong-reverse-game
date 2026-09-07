@@ -129,8 +129,10 @@ async def observe_request(request: Request, call_next):
     finally:
         # Route templates contain no invite tokens, participant credentials, or user text.
         route = getattr(request.scope.get('route'), 'path', '/unmatched')
-        logging.getLogger('uvicorn.error').info('request method=%s route=%s status=%d duration_ms=%.1f',
-                                              request.method, route, status, (monotonic() - started) * 1000)
+        # Cloud Logging treats plain stdout/stderr as UNSPECIFIED and drops it at INFO.
+        print(json.dumps({'level': 'ERROR' if status >= 500 else 'INFO', 'message': 'http_request',
+                          'method': request.method, 'route': route, 'status': status,
+                          'duration_ms': round((monotonic() - started) * 1000, 1)}), flush=True)
 
 
 def require_database(db: Session | None) -> Session:
