@@ -77,7 +77,7 @@ for(const name of (process.env.QA_ENGINES || 'chromium,webkit').split(',')) {
     const ctx=gameAudio.createAudioContext(); await ctx.resume();
     const oscillator=ctx.createOscillator(), destination=ctx.createMediaStreamDestination();
     oscillator.connect(destination); oscillator.start();
-    const mime=gameAudio.selectRecorderMimeType();
+    const mime=window.__forceMp4 ? 'audio/mp4' : gameAudio.selectRecorderMimeType();
     const recorder=mime?new MediaRecorder(destination.stream,{mimeType:mime}):new MediaRecorder(destination.stream);
     const chunks=[];recorder.ondataavailable=e=>chunks.push(e.data);
     const stopped=new Promise((resolve,reject)=>{recorder.onstop=resolve;recorder.onerror=reject});
@@ -87,6 +87,7 @@ for(const name of (process.env.QA_ENGINES || 'chromium,webkit').split(',')) {
     const wav=gameAudio.audioBufferToWav(reversed);
     const restored=await gameAudio.decodeRecording(ctx,wav);
     const output={mime:recorder.mimeType,duration:decoded.duration,wavBytes:wav.size,reversedDuration:restored.duration};
+    window.__audioSaved=restored;
     await ctx.close();window.__audioResult=output;
     }catch(error){window.__audioResult={error:String(error)}}};
    });
@@ -94,6 +95,22 @@ for(const name of (process.env.QA_ENGINES || 'chromium,webkit').split(',')) {
    await expect.poll(()=>audio.evaluate(()=>window.__audioResult),{timeout:30000}).toBeDefined();
    pipeline=await audio.evaluate(()=>window.__audioResult);
    expect(pipeline.duration).toBeGreaterThan(.5);expect(pipeline.wavBytes).toBeGreaterThan(44);
+   if(name==='webkit') {
+     expect(await audio.evaluate(()=>MediaRecorder.isTypeSupported('audio/mp4'))).toBe(true);
+     await audio.evaluate(()=>{window.__forceMp4=true;window.__audioResult=undefined;});
+     await audio.getByText('Run audio').click();
+     await expect.poll(()=>audio.evaluate(()=>window.__audioResult),{timeout:30000}).toBeDefined();
+     const mp4=await audio.evaluate(()=>window.__audioResult);
+     expect(mp4.duration).toBeGreaterThan(.5);expect(mp4.wavBytes).toBeGreaterThan(44);
+     pipeline.mp4Fallback=mp4;
+   }
+   await audio.evaluate(()=>{
+     const play=document.createElement('button');play.textContent='Play reversed WAV';document.body.appendChild(play);
+     play.onclick=async()=>{const ctx=gameAudio.createAudioContext();try{await gameAudio.playAudioBuffer(ctx,window.__audioSaved);window.__playResult='ended';}catch(e){window.__playResult=String(e);}finally{await ctx.close();}};
+   });
+   await audio.getByText('Play reversed WAV').click();
+   await expect.poll(()=>audio.evaluate(()=>window.__playResult),{timeout:20000}).toBe('ended');
+   pipeline.userGesturePlayback=true;
   }else if(process.env.QA_REQUIRE_AUDIO==='true')throw new Error(name+' lacks audio APIs');
   results.push({engine:name,strictCspBlocksInjection:true,officialTelegramSdkWithSimulatedBridge:true,audio:pipeline});
  } finally{await browser.close();}
