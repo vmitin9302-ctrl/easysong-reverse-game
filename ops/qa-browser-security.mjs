@@ -45,10 +45,12 @@ for(const name of (process.env.QA_ENGINES || 'chromium,webkit').split(',')) {
   await expect.poll(()=>telegram.evaluate(()=>window.__telegramEvents)).toContain('web_app_expand');
   expect(await telegram.evaluate(()=>window.__violations)).toEqual([]);
   const audio=await browser.newPage();
-  await audio.goto('about:blank');
+  await audio.route(origin+'/__qa_audio.html', route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html><body></body></html>'}));
+  await audio.goto(origin+'/__qa_audio.html');
   const js=(await transform(await readFile('apps/web/src/audio/browserAudio.ts','utf8'),{loader:'ts',format:'iife',globalName:'gameAudio'})).code;
   await audio.addScriptTag({content:js});
-  const capability=await audio.evaluate(()=>({context:typeof AudioContext,recorder:typeof MediaRecorder}));
+  const capability=await audio.evaluate(()=>({context:typeof (window.AudioContext || window.webkitAudioContext),recorder:typeof MediaRecorder,secure:isSecureContext}));
+  console.log(JSON.stringify({engine:name,capability}));
   let pipeline={unsupported:true,...capability};
   if(capability.context==='function' && capability.recorder==='function'){
    await audio.evaluate(()=>{
