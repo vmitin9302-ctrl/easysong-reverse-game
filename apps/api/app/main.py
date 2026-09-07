@@ -125,12 +125,21 @@ async def observe_request(request: Request, call_next):
     try:
         response = await call_next(request)
         status = response.status_code
+        # The serverless proxy may reuse an upstream connection at Uvicorn's idle
+        # timeout boundary (5s, also the heartbeat interval). Explicitly close the
+        # upstream HTTP/1 connection after its response to remove that race.
+        response.headers['Connection'] = 'close'
         return response
     finally:
         # Route templates contain no invite tokens, participant credentials, or user text.
         route = getattr(request.scope.get('route'), 'path', '/unmatched')
         # Cloud Logging treats plain stdout/stderr as UNSPECIFIED and drops it at INFO.
-        print(json.dumps({'level': 'ERROR' if status >= 500 else 'INFO', 'message': 'http_request',
+        request_id = request.headers.get('x-request-id', '')
+        try:
+            request_id = str(uuid.UUID(request_id))
+        except ValueError:
+            request_id = ''
+        print(json.dumps({'request_id': request_id, 'level': 'ERROR' if status >= 500 else 'INFO', 'message': 'http_request',
                           'method': request.method, 'route': route, 'status': status,
                           'duration_ms': round((monotonic() - started) * 1000, 1)}), flush=True)
 

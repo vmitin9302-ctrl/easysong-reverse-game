@@ -94,3 +94,15 @@ def test_request_log_is_structured_and_does_not_expose_invite_or_player_token(du
     assert any(entry['route'] == '/v1/matches/join/{invite_token}' and entry['level'] == 'INFO' for entry in entries)
     assert created['invite_token'] not in raw
     assert created['player_token'] not in raw
+
+
+def test_upstream_connection_closes_and_logs_use_platform_request_id(duel, capsys):
+    import json
+    client, _, created = duel
+    request_id = str(uuid.uuid4())
+    response = client.get(f"/v1/matches/{created['id']}", headers={
+        'X-Player-Token': created['player_token'], 'X-Request-Id': request_id})
+    assert response.status_code == 200
+    assert response.headers['connection'] == 'close'
+    entries = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith('{')]
+    assert entries[-1]['request_id'] == request_id
