@@ -9,7 +9,7 @@ import {
   audioBufferToMono, audioBufferToWav, createAudioContext, decodeRecording,
   normalizedGameAudio, playAudioBuffer, reverseAudioBuffer, selectRecorderMimeType,
 } from './audio/browserAudio';
-import { initTelegram } from './telegram';
+import { connectTelegramBridge, initTelegram } from './telegram';
 import { remoteTurnAction } from './duelState';
 import './styles.css';
 
@@ -158,6 +158,20 @@ export default function App() {
     };
   }, [match?.id, match?.status, token]);
 
+  useEffect(() => {
+    const pause = () => {
+      if (recorder.current?.state === 'recording') {
+        discardRecording();
+        fail('Запись остановлена, потому что игра свернулась. Вернись в игру и запиши фразу ещё раз.');
+      } else releaseMicrophone();
+    };
+    const visibility = () => { if (document.visibilityState === 'hidden') pause(); };
+    const disconnect = connectTelegramBridge(() => window.dispatchEvent(new Event('online')), pause);
+    window.addEventListener('pagehide', pause);
+    document.addEventListener('visibilitychange', visibility);
+    return () => { disconnect(); window.removeEventListener('pagehide', pause); document.removeEventListener('visibilitychange', visibility); };
+  }, []);
+
   function context() { return ctx.current ??= createAudioContext(); }
   function applyPlayerToken(value: string) { tokenRef.current = value; setToken(value); }
   function releaseMicrophone() { stream.current?.getTracks().forEach((track) => track.stop()); stream.current = null; }
@@ -166,6 +180,7 @@ export default function App() {
     if (recorder.current) {
       recorder.current.onstop = null;
       recorder.current.ondataavailable = null;
+      recorder.current.onerror = null;
       if (recorder.current.state === 'recording') recorder.current.stop();
       recorder.current = null;
     }
@@ -359,6 +374,7 @@ export default function App() {
       const mime = selectRecorderMimeType();
       const item = mime ? new MediaRecorder(activeStream, { mimeType: mime }) : new MediaRecorder(activeStream);
       recorder.current = item; chunks.current = [];
+      item.onerror = () => { discardRecording(); fail('Браузер прервал запись. Попробуй записать фразу ещё раз.'); };
       item.ondataavailable = (event) => { if (event.data.size) chunks.current.push(event.data); };
       item.onstop = () => {
         const blob = new Blob(chunks.current, { type: item.mimeType || 'audio/webm' });

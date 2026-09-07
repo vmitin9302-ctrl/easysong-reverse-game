@@ -35,6 +35,10 @@ try {
         catch { await route.continue(); }
       });
     }
+    await context.addInitScript(() => {
+      window.__cspViolations = [];
+      document.addEventListener('securitypolicyviolation', e => window.__cspViolations.push({ directive: e.effectiveDirective, blocked: e.blockedURI.split('?')[0] }));
+    });
     const page = await context.newPage();
     page.setDefaultTimeout(35000);
     page.on('pageerror', (error) => errors.push(error.message));
@@ -107,6 +111,7 @@ try {
   }
   for (const page of pages) await expect(page.getByText('ОНЛАЙН-ДУЭЛЬ ЗАВЕРШЕНА')).toBeVisible();
   expect(errors).toEqual([]);
+  for (const page of pages) expect(await page.evaluate(() => window.__cspViolations)).toEqual([]);
   // Navigation cancels in-flight requests; activity may arrive after a game transition.
   // Neither is a failed game action. Keep them visible in the report.
   const unexpected = failures.filter((item) => !item.plannedOffline && item.failure !== 'net::ERR_ABORTED' && !(item.status === 409 && item.path.endsWith('/activity')));

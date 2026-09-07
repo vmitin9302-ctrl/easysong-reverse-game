@@ -17,6 +17,18 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npx playwright install --with-deps chromium webkit
+      - name: Strict CSP and audio engine compatibility
+        run: node ops/qa-browser-security.mjs
+        env:
+          QA_REQUIRE_AUDIO: 'true'
+          QA_SECURITY_OUTPUT: work/security-engines.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-compatibility
+          path: work/security-engines.json
+          if-no-files-found: ignore
 
   python:
     runs-on: ubuntu-latest
