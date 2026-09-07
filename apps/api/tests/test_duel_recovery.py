@@ -83,3 +83,14 @@ def test_cancel_can_be_retried_after_lost_response(duel):
     path = f"/v1/matches/{created['id']}/cancel"
     headers = {'X-Player-Token': created['player_token']}
     assert client.post(path, headers=headers).json() == client.post(path, headers=headers).json() == {'cancelled': True}
+
+
+def test_request_log_is_structured_and_does_not_expose_invite_or_player_token(duel, capsys):
+    import json
+    client, _, created = duel
+    client.post(f"/v1/matches/join/{created['invite_token']}", json={})
+    raw = capsys.readouterr().out
+    entries = [json.loads(line) for line in raw.splitlines() if line.startswith('{')]
+    assert any(entry['route'] == '/v1/matches/join/{invite_token}' and entry['level'] == 'INFO' for entry in entries)
+    assert created['invite_token'] not in raw
+    assert created['player_token'] not in raw
