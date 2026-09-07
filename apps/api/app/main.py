@@ -5,11 +5,12 @@ import json
 import logging
 import secrets
 import uuid
+from time import monotonic
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
@@ -115,6 +116,21 @@ app.add_middleware(
     allow_methods=['GET', 'POST', 'OPTIONS'],
     allow_headers=['Content-Type', 'Authorization', 'X-Admin-Session', 'X-Player-Token'],
 )
+
+
+@app.middleware('http')
+async def observe_request(request: Request, call_next):
+    started = monotonic()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        # Route templates contain no invite tokens, participant credentials, or user text.
+        route = getattr(request.scope.get('route'), 'path', '/unmatched')
+        logging.getLogger('uvicorn.error').info('request method=%s route=%s status=%d duration_ms=%.1f',
+                                              request.method, route, status, (monotonic() - started) * 1000)
 
 
 def require_database(db: Session | None) -> Session:

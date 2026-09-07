@@ -17,6 +17,7 @@ await writeFile(audioPath, clip);
 const browser = await chromium.launch({ args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-audio-capture=${audioPath}`] });
 const errors = [];
 const failures = [];
+let plannedOffline = false;
 const contexts = [];
 const pages = [];
 try {
@@ -35,7 +36,7 @@ try {
     const page = await context.newPage();
     page.setDefaultTimeout(35000);
     page.on('pageerror', (error) => errors.push(error.message));
-    page.on('requestfailed', (request) => failures.push({ failure: request.failure()?.errorText, path: new URL(request.url()).pathname }));
+    page.on('requestfailed', (request) => failures.push({ failure: request.failure()?.errorText, path: new URL(request.url()).pathname, plannedOffline }));
     page.on('response', (response) => {
       if (response.status() >= 400) failures.push({ status: response.status(), path: new URL(response.url()).pathname });
     });
@@ -57,6 +58,15 @@ try {
     await challenger.getByPlaceholder('Например: сегодня отличный день').fill(phrase);
     await challenger.waitForTimeout(6200);
     await expect(challenger.getByPlaceholder('Например: сегодня отличный день')).toHaveValue(phrase);
+    if (round === 1) {
+      plannedOffline = true;
+      await contexts[0].setOffline(true);
+      await expect(challenger.getByText('🟡 Переподключаемся…')).toBeVisible();
+      await contexts[0].setOffline(false);
+      await expect(challenger.getByText('🟡 Переподключаемся…')).not.toBeVisible();
+      plannedOffline = false;
+      await expect(challenger.getByPlaceholder('Например: сегодня отличный день')).toHaveValue(phrase);
+    }
     await challenger.getByRole('button', { name: 'Сохранить и записать' }).click();
     await challenger.getByRole('button', { name: 'Разрешить микрофон' }).click();
     await challenger.locator('.mic-button').click();
@@ -91,7 +101,7 @@ try {
   expect(errors).toEqual([]);
   // Navigation cancels in-flight requests; activity may arrive after a game transition.
   // Neither is a failed game action. Keep them visible in the report.
-  const unexpected = failures.filter((item) => item.failure !== 'net::ERR_ABORTED' && !(item.status === 409 && item.path.endsWith('/activity')));
+  const unexpected = failures.filter((item) => !item.plannedOffline && item.failure !== 'net::ERR_ABORTED' && !(item.status === 409 && item.path.endsWith('/activity')));
   expect(unexpected).toEqual([]);
   console.log(JSON.stringify({ passed: true, scenarios: ['desktop + mobile Chromium', 'invite', 'draft heartbeat', 'MediaRecorder WAV upload', 'reverse playback', 'refresh participant resume', 'two rounds', 'shared scores', 'finish'], errors, unexpected, expectedNetworkEvents: failures }));
 } catch (error) {
