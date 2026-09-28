@@ -139,7 +139,7 @@ jobs:
           revision-log-options-min-level: info
           revision-env: |
             ALLOWED_ORIGINS=${{ steps.urls.outputs.web_url }}
-            EASYSONG_URL=https://easysong.ru/webapp/auth?next=%2Fwebapp
+            EASYSONG_URL=http://easysong.ru/lp-app?utm_source=skajinaoborot
             S3_ENDPOINT_URL=https://storage.yandexcloud.net
             S3_REGION=ru-central1
             AUDIO_TTL_SECONDS=1200
@@ -175,7 +175,7 @@ jobs:
             api_url='https://${{ needs.api.outputs.api_id }}.containers.yandexcloud.net'
           fi
           VITE_API_BASE_URL="$api_url" \
-          VITE_EASYSONG_URL='https://easysong.ru/webapp/auth?next=%2Fwebapp' \
+          VITE_EASYSONG_URL='http://easysong.ru/lp-app?utm_source=skajinaoborot' \
           VITE_TELEGRAM_BOT_URL='https://t.me/easygame7_bot' \
           npm run build
 

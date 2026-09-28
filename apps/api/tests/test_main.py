@@ -51,8 +51,14 @@ def test_result_validation_rejects_out_of_range_score():
     assert response.status_code == 422
 
 
+def test_easysong_default_preserves_game_campaign():
+    assert type(settings).model_fields['easysong_url'].default == (
+        'http://easysong.ru/lp-app?utm_source=skajinaoborot'
+    )
+
+
 def test_easysong_redirect_works_without_database(monkeypatch):
-    destination = 'https://easysong.ru/webapp/auth?next=%2Fwebapp'
+    destination = 'http://easysong.ru/lp-app?utm_source=skajinaoborot'
     monkeypatch.setattr(settings, 'easysong_url', destination)
     response = client.get('/go/easysong?source=web&campaign=reverse_game', follow_redirects=False)
     assert response.status_code == 302

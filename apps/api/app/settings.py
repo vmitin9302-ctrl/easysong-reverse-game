@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
 
     database_url: str | None = None
-    easysong_url: str = 'https://easysong.ru/webapp/auth?next=%2Fwebapp'
+    easysong_url: str = 'http://easysong.ru/lp-app?utm_source=skajinaoborot'
     allowed_origins: str = 'http://localhost:5173'
     session_secret: str = 'development-only-change-me'
     telegram_bot_token: str | None = None
